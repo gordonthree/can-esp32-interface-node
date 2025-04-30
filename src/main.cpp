@@ -65,9 +65,9 @@ struct remoteNode {
 };
 
 struct remoteNode nodeList[8]; // list of remote nodes
-volatile uint8_t nodeListPtr = 0; // node list pointer
-const uint8_t nodeListMax = 8; // max number of nodes in the list
-const uint8_t modCntMax = 8; // max number of modules per node
+volatile uint8_t  nodeListPtr = 0; // node list pointer
+const uint8_t     nodeListMax = 8; // max number of nodes in the list
+const uint8_t     modCntMax = 4; // max number of modules per node
 
 static bool driver_installed = false;
 
@@ -75,12 +75,12 @@ unsigned long previousMillis = 0;  // will store last time a message was send
 
 static const char *TAG = "can_control";
 
-volatile uint8_t nodeSwitchState[8] = {0, 0, 0, 0, 0, 0, 0, 0}; // switch state
-volatile uint8_t nodeSwitchMode[8] = {0, 0, 0, 0, 0, 0, 0, 0}; // switch mode
+volatile uint8_t  nodeSwitchState[8] = {0, 0, 0, 0, 0, 0, 0, 0}; // switch state
+volatile uint8_t  nodeSwitchMode[8] = {0, 0, 0, 0, 0, 0, 0, 0}; // switch mode
 
-volatile uint8_t testState[3] = {1, 0, 2}; // test state
-volatile uint8_t testPtr = 0; // test pointer
-volatile uint8_t testRestart = true; // set flag to true to restart test message squence
+volatile uint8_t  testState[3] = {1, 0, 2}; // test state
+volatile uint8_t  testPtr = 0; // test pointer
+volatile uint8_t  testRestart = true; // set flag to true to restart test message squence
 
 volatile uint16_t introMsg[8] = {0, 0, 0, 0, 0, 0, 0, 0}; // intro messages
 volatile uint8_t  introMsgPtr = 0; // intro message pointer
