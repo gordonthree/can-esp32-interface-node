@@ -6,12 +6,14 @@
 
 // Load Wi-Fi networking
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <esp_wifi.h>
 #include <AsyncTCP.h>
 #include <ESPmDNS.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoOTA.h>
 #include <WebSerial.h>
+#include <time.h>
 
 static AsyncWebServer server(80);
 
@@ -40,16 +42,31 @@ static AsyncWebServer server(80);
 #define TRANSMIT_RATE_MS 1000
 #define POLLING_RATE_MS 1000
 
+// time stuff
+#define NTP_SERVER     "us.pool.ntp.org"
+#define UTC_OFFSET     0
+#define UTC_OFFSET_DST 0
+
+
 // organize nodes 
 struct remoteNode {
-  uint8_t   nodeID[4]; // four byte node identifier 
-  uint16_t  nodeType; // first introduction type
-  uint16_t  subModules[4]; // introductions for up to four sub modules 
-  uint8_t   moduleCnt; // sub module count
-  uint32_t  lastSeen; // unix timestamp 
+  // 32-bit node id number
+  uint8_t   nodeID[4]     = {0,0,0,0}; 
+  // 11-bit can bus message id and node type
+  uint16_t  nodeType      = 0;
+  // storage for any sub modules
+  uint16_t  subModules[4] = {0,0,0,0}; 
+  // sub module count for each sub module
+  uint8_t   subModCnt[4]  = {0,0,0,0};
+  // total sub module count
+  uint8_t   moduleCnt     = 0; 
+  // epoch timestamp
+  uint32_t  lastSeen      = 0;
 };
 
 struct remoteNode nodeList[8]; // list of remote nodes
+volatile uint8_t nodeListPtr = 0; // node list pointer
+const uint8_t nodeListMax = 8; // max number of nodes in the list
 
 static bool driver_installed = false;
 
@@ -69,7 +86,6 @@ volatile uint8_t  introMsgPtr = 0; // intro message pointer
 volatile uint8_t  introMsgData[8] = {0, 0, 0, 0, 0, 0, 0, 0}; // intro message data
 volatile uint8_t  introMsgCnt = 0; // intro message count
 
-#ifdef M5PICO
 const char* AP_SSID  = "m5stamp-pico";
 const char* hostname = "m5stamp-pico";
 #define CAN_MY_TYPE IFACE_TOUCHSCREEN_TYPE_A
@@ -77,41 +93,13 @@ const uint8_t* myNodeFeatureMask = FEATURE_IFACE_TOUCHSCREEN_TYPE_A; // node fea
 const uint16_t myNodeIntro = REQ_INTERFACES; // intro request for my node type
 const uint8_t otherNodeID[] = {0xFA, 0x61, 0x5D, 0xDC}; // M5STACK node id
 
-
-#elif M5STACK
-const char* AP_SSID  = "m5stack-atom";
-const char* hostname = "m5stack-atom";
-#define CAN_MY_TYPE BOX_SW_4RELAY // 4 relay switch box
-const uint8_t* myNodeFeatureMask = FEATURE_BOX_SW_4RELAY; // node feature mask
-const uint8_t mySwitchCount = 4;
-const uint16_t myNodeIntro = REQ_BOXES; // intro request for my node type
-const uint8_t otherNodeID[] = {0x25, 0x97, 0x51, 0x1C}; // M5PICO node id
-
-#elif M5PICO2
-const char* AP_SSID  = "m5pico2";
-const char* hostname = "m5pico2";
-#define CAN_MY_TYPE BOX_SW_4GANG // 4 switch box
-const uint8_t* myNodeFeatureMask = FEATURE_BOX_SW_4GANG; // node feature mask
-const uint8_t mySwitchCount = 4;
-const uint16_t myNodeIntro = REQ_BOXES; // intro request for my node type
-const uint8_t otherNodeID[] = {0x25, 0x97, 0x51, 0x1C}; // M5PICO node id
-
-#else
-const char* AP_SSID  = "cancontrol-test";
-const char* hostname = "cancontrol-test";
-#define CAN_MY_TYPE DISP_LCD // LCD display
-const uint8_t* myNodeFeatureMask = FEATURE_DISP_LCD; // node feature mask
-const uint16_t myNodeIntro = REQ_DISPLAYS; // intro request for my node type
-const uint8_t otherNodeID[] = {0x25, 0x97, 0x51, 0x1C}; // M5STACK node id
-#endif
-
 const char* ssid     = SECRET_SSID;
 const char* password = SECRET_PSK;
 
 int period = 1000;
 int8_t ipCnt = 0;
 
-unsigned long time_now = 0;
+// unsigned long time_now = 0;
 
 CRGB leds[ARGB_LEDS];
 
@@ -120,6 +108,82 @@ unsigned long ota_progress_millis = 0;
 static volatile bool wifi_connected = false;
 static volatile uint8_t myNodeID[] = {0, 0, 0, 0}; // node ID
 
+// search the node list for specified node ID
+/* uint8_t nodeSearch(uint8_t* rxNodeID) {
+  static int compare = 0; // comparison variable
+
+  for (uint8_t i = 0; i < nodeListMax; i++) {
+    // uint32_t nodeID32   = (nodeList[i].nodeID[0] << 24) | (nodeList[i].nodeID[1] << 16) | (nodeList[i].nodeID[2] << 8) | nodeList[i].nodeID[3];
+    // uint32_t rxNodeID32 = (rxNodeID[0] << 24) | (rxNodeID[1] << 16) | (rxNodeID[2] << 8) | rxNodeID[3];
+    if (memcmp((const void*)nodeList[i].nodeID, (const void*)rxNodeID, 4) == 0) { // check if node ID matches
+      return i; // return index of node
+    }
+  }
+  return 255; // node not found
+}
+ */
+
+// Define the node ID length for clarity and maintainability
+#define NODE_ID_LENGTH 4
+// Define a clear return value for "not found"
+#define NODE_NOT_FOUND -1
+
+// Function that gets current epoch time
+unsigned long getEpoch() {
+  time_t now;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    //Serial.println("Failed to obtain time");
+    return(0);
+  }
+  time(&now);
+  return now;
+}
+
+/**
+ * @brief Searches the global nodeList for a specified node ID.
+ *
+ * @param rxNodeID Pointer to the 4-byte node ID to search for. Should not be NULL.
+ * @return The index of the found node in nodeList if successful,
+ *         NODE_NOT_FOUND (-1) if the node ID is not found or rxNodeID is NULL.
+ */
+int nodeSearch(const uint8_t rxNodeID[4]) {
+  // Basic input validation
+  if (rxNodeID == NULL) {
+      return NODE_NOT_FOUND; // Cannot search for a NULL ID
+  }
+
+  for (uint8_t i = 0; i < nodeListMax; i++) {
+    // Compare the 4 bytes of the IDs
+    if (memcmp(nodeList[i].nodeID, rxNodeID, NODE_ID_LENGTH) == 0) {
+      return (int)i; // Return index of the found node
+    }
+  }
+
+  return NODE_NOT_FOUND; // Node not found after searching the entire list
+}
+
+// dump node list to WebSerial
+void dumpNodeList() {
+  WebSerial.println(" ");
+  WebSerial.println(" ");
+  WebSerial.println("--------------------------------------------------------------------------");
+  WebSerial.println("Node List:");
+  for (uint8_t i = 0; i < nodeListMax; i++) {
+    if (nodeList[i].nodeID[0] != 0) { // check if node ID is not empty
+      WebSerial.printf("Node %d: %02x:%02x:%02x:%02x\n", i, nodeList[i].nodeID[0], nodeList[i].nodeID[1], nodeList[i].nodeID[2], nodeList[i].nodeID[3]);
+      WebSerial.printf("Type: %x\n", nodeList[i].nodeType);
+      WebSerial.printf("Sub Modules: %x %x %x %x\n", nodeList[i].subModules[0], nodeList[i].subModules[1], nodeList[i].subModules[2], nodeList[i].subModules[3]);
+      WebSerial.printf("Sub Module Count: %d %d %d %d\n", nodeList[i].subModCnt[0], nodeList[i].subModCnt[1], nodeList[i].subModCnt[2], nodeList[i].subModCnt[3]);
+      WebSerial.printf("Module Count: %d\n", nodeList[i].moduleCnt);
+      WebSerial.printf("Last Seen: %lu\n", nodeList[i].lastSeen);
+    }
+  }
+  WebSerial.println("--------------------------------------------------------------------------");
+  WebSerial.println(" ");
+  WebSerial.println(" ");
+
+}
 
 
 void readMacAddress(){
@@ -155,49 +219,10 @@ void wifiOnDisconnect(){
 }
 
 void WiFiEvent(WiFiEvent_t event){
-   /*  switch(event) {
-
-        case SYSTEM_EVENT_AP_START:
-            //can set ap hostname here
-            WiFi.softAPsetHostname(AP_SSID);
-            //enable ap ipv6 here
-            WiFi.softAPenableIpV6();
-            break;
-
-        case SYSTEM_EVENT_STA_START:
-            //set sta hostname here
-            WiFi.setHostname(AP_SSID);
-            break;
-
-        case SYSTEM_EVENT_STA_CONNECTED:
-            //enable sta ipv6 here
-            WiFi.enableIpV6();
-            break;
-
-        case SYSTEM_EVENT_AP_STA_GOT_IP6:
-            //both interfaces get the same event
-            Serial.print("STA IPv6: ");
-            Serial.println(WiFi.localIPv6());
-            Serial.print("AP IPv6: ");
-            Serial.println(WiFi.softAPIPv6());
-            break;
-
-        case SYSTEM_EVENT_STA_GOT_IP:
-            wifiOnConnect();
-            wifi_connected = true;
-            break;
-
-        case SYSTEM_EVENT_STA_DISCONNECTED:
-            wifi_connected = false;
-            wifiOnDisconnect();
-            break;
-
-        default:
-            break;
-    } */
+  
 }
 
-static void send_message(uint16_t msgID, uint8_t *msgData, uint8_t dlc) {
+static void send_message(const uint16_t msgID, const uint8_t *msgData, const uint8_t dlc) {
   static twai_message_t message;
   // static uint8_t dataBytes[] = {0, 0, 0, 0, 0, 0, 0, 0}; // initialize dataBytes array with 8 bytes of 0
 
@@ -263,31 +288,7 @@ static void rxDisplayMode(uint8_t *data, uint8_t displayMode) {
   }
 }
 
-static void rxSwMomDur(uint8_t *data) {
-  static uint8_t switchID = data[4]; // switch ID 
-  static uint16_t swDuration = (data[5] << 8) | data[6]; // duration in ms
-}
-
-static void rxSwBlinkDelay(uint8_t *data) {
-  static uint8_t switchID = data[4]; // switch ID 
-  static uint16_t swBlinkDelay = (data[5] << 8) | data[6]; // delay in ms 
-}
-
-static void rxSwStrobePat(uint8_t *data) {
-  static uint8_t switchID = data[4]; // switch ID 
-  static uint8_t swStrobePat = data[5]; // strobe pattern
-}
-
-static void rxPWMDuty(uint8_t *data) {
-  static uint8_t switchID = data[4]; // switch ID 
-  static uint16_t PWMDuty = (data[5] << 8) | data[6]; // pwm duty cycle
-}
-
-static void rxPWMFreq(uint8_t *data) {
-  static uint8_t switchID = data[4]; // switch ID 
-  static uint16_t PWMFreq = (data[5] << 8) | data[6]; // pwm frequency 
-}
-
+// assemble message to change output switch state on remote nodes
 static void txSwitchState(uint8_t *data, uint8_t switchID, uint8_t swState) {
   static uint8_t txDLC = 5;
   static uint8_t dataBytes[] = {data[0], data[1], data[2], data[3], switchID}; // set node id and switch ID
@@ -311,33 +312,7 @@ static void txSwitchState(uint8_t *data, uint8_t switchID, uint8_t swState) {
   }
 }
 
-static void rxSwitchState(uint8_t *data, uint8_t swState) {
-  static uint8_t switchID = data[4]; // switch ID 
-  // static uint8_t unitID[] = {data[0], data[1], data[2], data[3]}; // unit ID
-  static uint8_t dataBytes[] = {myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3], switchID}; // send my own node ID, along with the switch number
-
-  WebSerial.printf("RX: Set Switch %d State %d\n", switchID, swState);
-  nodeSwitchState[switchID] = swState; // update switch state
-  
-
-  switch (swState) {
-    case 0: // switch off
-      // send_message(DATA_OUTPUT_SWITCH_OFF, dataBytes, sizeof(dataBytes));
-      break;
-    case 1: // switch on
-      // send_message(DATA_OUTPUT_SWITCH_ON, dataBytes, sizeof(dataBytes));
-      break;
-    case 2: // momentary press
-      send_message(DATA_OUTPUT_SWITCH_MOM_PUSH , dataBytes, sizeof(dataBytes));
-      // send_message(DATA_OUTPUT_SWITCH_ON, dataBytes, sizeof(dataBytes));
-      // send_message(DATA_OUTPUT_SWITCH_OFF, dataBytes, sizeof(dataBytes));
-      break;
-    default:
-      WebSerial.println("Invalid switch state");
-      break;
-  }
-}
-
+// assemble message to change output switch mode on remote nodes
 static void txSwitchMode(uint8_t *data, uint8_t switchID, uint8_t switchMode) {
   static uint8_t txDLC = 6;
   static uint8_t dataBytes[] = {data[0], data[1], data[2], data[3], switchID, switchMode}; // set node id switch ID
@@ -345,35 +320,7 @@ static void txSwitchMode(uint8_t *data, uint8_t switchID, uint8_t switchMode) {
   send_message(SW_SET_MODE, dataBytes, sizeof(dataBytes)); // send message to set switch mode
 }
 
-static void rxSwitchMode(uint8_t *data) {
-  static uint8_t switchID = data[4]; // switch ID 
-  static uint8_t switchMode = data[5]; // switch mode
-
-  static uint8_t dataBytes[] = {myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3], switchID, switchMode}; // send my own node ID, along with the switch number
-
-  WebSerial.printf("RX: Set Switch %d State %d\n", switchID, switchMode);
-  // send_message(DATA_OUTPUT_SWITCH_MODE, dataBytes, sizeof(dataBytes));    
-  nodeSwitchMode[switchID] = switchMode; // update switch mode
-
-
-  switch (switchMode) {
-    case 0: // solid state (on/off)
-      break;  
-    break;
-    case 1: // one-shot momentary
-      break;
-    case 2: // blinking
-      break;
-    case 3: // strobing
-      break;
-    case 4: // pwm
-      break;
-    default:
-      WebSerial.println("Invalid switch mode");
-      break;
-  }
-}
-
+// assemble node introduction message
 static void txIntroduction() {
     if (introMsgPtr == 0) {
       static uint8_t dataBytes[6] = { myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3], 
@@ -389,136 +336,63 @@ static void txIntroduction() {
 }
 
 // send command to clear normal op flag on remote
-static void txSendHalt(uint8_t* txNodeID) {
+static void txSendHalt(const uint8_t* txNodeID) {
   // uint8_t dataBytes[] = {0xA0, 0xA0, 0x55, 0x55}; // data bytes
   send_message(MSG_HALT_OPER, txNodeID, 4);
 }
 
-static void txIntroack(uint8_t* txNodeID) {
+static void txIntroack(const uint8_t* txNodeID) {
   // uint8_t dataBytes[] = {0xA0, 0xA0, 0x55, 0x55}; // data bytes
   send_message(ACK_INTRODUCTION, txNodeID, 4);
 }
 
+// eventually check on connected nodes here
 static void nodeCheckStatus() {
-  #ifndef M5PICO
-  if (FLAG_SEND_INTRODUCTION) {
-    // send introduction message to all nodes
-    txIntroduction();
-    WebSerial.printf("TX: Introduction Message ptr=%d\n", introMsgPtr);
 
-    if (introMsgPtr >= introMsgCnt) {
-      FLAG_SEND_INTRODUCTION = false; // clear flag to send introduction message
-    }
-  }
-
-  if (!FLAG_BEGIN_NORMAL_OPER) {
-    return; // normal operation not started, exit function
-  }
-
-  /*for (uint8_t switchID = 0; switchID < mySwitchCount; switchID++) {
-    static uint8_t swState = nodeSwitchState[switchID]; // get switch state
-    static uint8_t swMode = nodeSwitchMode[switchID]; // get switch mode
-    static uint8_t stateData[] = {myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3], switchID}; // send my own node ID, along with the switch number
-    static uint8_t modeData[] = {myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3], switchID, swMode}; // send my own node ID, along with the switch number
-      
-    // send_message(DATA_OUTPUT_SWITCH_MODE, modeData, sizeof(modeData));  
-    WebSerial.printf("TX: DATA: Switch %d State %d Mode %d\n", switchID, swState, swMode);
-
-    switch (swState) {
-      case 0: // switch off
-        send_message(DATA_OUTPUT_SWITCH_OFF, stateData, sizeof(stateData));
-        break;
-      case 1: // switch on
-        send_message(DATA_OUTPUT_SWITCH_ON, stateData, sizeof(stateData));
-        break;
-      case 2: // momentary press
-        // send_message(DATA_OUTPUT_SWITCH_ON, dataBytes, sizeof(dataBytes));
-        // send_message(DATA_OUTPUT_SWITCH_OFF, dataBytes, sizeof(dataBytes));
-        break;
-      default:
-        break;
-    }
-    for (int cntr = 0; cntr < 10; cntr++) {
-      __asm__("nop\n\t");
-    }
-  }*/
- 
-  #endif
 }
 
+// handle incoming can messages
 static void handle_rx_message(twai_message_t &message) {
-  // static twai_message_t altmessage;
-
   static bool msgFlag = false;
+  static bool haveRXID = false; 
   static int msgIDComp;
+  static uint8_t rxNodeID[4] = {0, 0, 0, 0}; // node ID
+
   leds[0] = CRGB::Orange;
   FastLED.show();
-  static uint8_t rxUnitID[4] = {message.data[0], message.data[1], message.data[2], message.data[3]};
-  msgIDComp = memcmp((const void *)rxUnitID, (const void *)myNodeID, 4);
 
-  if (msgIDComp == 0) { // message is for us
-    msgFlag = true; // message is for us, set flag to true
-    WebSerial.printf("RX: ID MATCH MSG %x Data:", message.identifier);
+  WebSerial.printf("TIMESTAMP: %lu\n", getEpoch());
+
+  // check if message contains enough data to have node id
+  if (message.data_length_code > 3) { 
+    memcpy((void *)rxNodeID, (const void *)message.data, 4); // copy node id from message
+    msgIDComp = memcmp((const void *)rxNodeID, (const void *)myNodeID, 4);
+    haveRXID = true; // set flag to true if message contains node id
+
+    if (msgIDComp == 0) { // message is for us
+      msgFlag = true; // message is for us, set flag to true
+    }
   }
 
   if (message.data_length_code > 0) { // message contains data, check if it is for us
-    WebSerial.printf("RX: MSG 0x%x Data:", message.identifier);
+    if (msgFlag) {
+      WebSerial.printf("RX: ID MATCH MSG: 0x%x Data:", message.identifier);
+    } else {
+      WebSerial.printf("RX: NO MATCH MSG: 0x%x Data:", message.identifier);
+    }
     for (int i = 0; i < message.data_length_code; i++) {
       WebSerial.printf(" %d = %02x", i, message.data[i]);
     }
     WebSerial.println("");
   } else {
-    msgFlag = true; // general broadcast message is valid
-    WebSerial.printf("RX: MSG 0x%x NO DATA\n", message.identifier);
+    if (msgFlag) {
+      WebSerial.printf("RX: ID MATCH MSG: 0x%x NO DATA", message.identifier);
+    } else {
+      WebSerial.printf("RX: NO MATCH MSG: 0x%x NO DATA", message.identifier);
+    }
   }
-
-  /*   
-  if (msgFlag == false) {
-    return; // message is not for us, exit function
-  }
- */
-  // if (!msgFlag) {
-  //   WebSerial.println("Message does not match our ID.");
-  // }
 
   switch (message.identifier) {
-    case MSG_NORM_OPER: // normal operation message
-      WebSerial.printf("RX: Normal Operation Message\n");
-      FLAG_BEGIN_NORMAL_OPER = true; // set flag to begin normal operation
-      introMsgPtr = introMsgPtr + 1; // increment intro message pointer 4th step
-      break;
-    case MSG_HALT_OPER: // halt operation message
-      WebSerial.printf("RX: Halt Operation Message\n");
-      introMsgPtr = 0; // reset intro message pointer
-      FLAG_BEGIN_NORMAL_OPER = false; // clear flag to halt normal operation
-      break;
-    case SW_SET_OFF:            // set output switch off
-      rxSwitchState(message.data, 0);
-      break;
-    case SW_SET_ON:             // set output switch on
-      rxSwitchState(message.data, 1);
-      break;
-    case SW_MOM_PRESS:          // set output momentary
-      rxSwitchState(message.data, 2);
-      break;
-    case SW_SET_MODE:           // setup output switch modes
-      rxSwitchMode(message.data);
-      break;
-    case SW_SET_PWM_DUTY:          // set output switch pwm duty
-      rxPWMDuty(message.data);  
-      break;
-    case SW_SET_PWM_FREQ:          // set output switch pwm frequency
-      rxPWMFreq(message.data);
-      break;
-    case SW_SET_MOM_DUR:          // set output switch momentary duration
-      rxSwMomDur(message.data);
-      break;
-    case SW_SET_BLINK_DELAY:          // set output switch blink delay
-      rxSwBlinkDelay(message.data);
-      break;
-    case SW_SET_STROBE_PAT:          // set output switch strobe pattern
-      rxSwStrobePat(message.data);
-      break;
     case SET_DISPLAY_OFF:          // set display off
       rxDisplayMode(message.data, 0); 
       break;
@@ -546,48 +420,58 @@ static void handle_rx_message(twai_message_t &message) {
       break;
     case REQ_INTERFACES: // request for interface introduction     
       WebSerial.printf("RX: IFACE intro req, responding to %02x:%02x:%02x:%02x\n", message.data[0], message.data[1], message.data[2], message.data[3]);
-      FLAG_SEND_INTRODUCTION = true; // set flag to send introduction message
+      // FLAG_SEND_INTRODUCTION = true; // set flag to send introduction message
       break;
     case REQ_BOXES: // request for box introduction
-      WebSerial.printf("RX: BOX intro req, responding to %02x:%02x:%02x:%02x\n", message.data[0], message.data[1], message.data[2], message.data[3]);
-      introMsgPtr = 0; // reset intro message pointer
-      FLAG_SEND_INTRODUCTION = true; // set flag to send introduction message
       break;
     case ACK_INTRODUCTION:
-      if (msgFlag) { // message was sent to our ID
-        WebSerial.printf("RX: ACK intro from %02x:%02x:%02x:%02x\n", message.data[0], message.data[1], message.data[2], message.data[3]);
-        if (introMsgPtr < introMsgCnt) {
-          FLAG_SEND_INTRODUCTION = true; // set flag to send introduction message
-          WebSerial.printf("RX: Intro ACK: Inc message pointer %d\n", introMsgPtr);    
-          introMsgPtr = introMsgPtr + 1; // increment intro message pointer 1st step
-        } else {
-          WebSerial.printf("RX: Intro ACK: No more messages %d\n", introMsgPtr);  
-          FLAG_SEND_INTRODUCTION = false; // clear flag to send introduction message    
-        }
-      }
+
       break;
     
     default:
-      // if ((message.identifier & MASK_24BIT) == (INTRO_INTERFACE)) { // received an interface introduction
-      //   static uint8_t respBytes[] = {message.data[0], message.data[1], message.data[2], message.data[3]}; // node that sent the intro
-      //   WebSerial.printf("RX: IFACE intro from %02x:%02x:%02x:%02x\n", message.data[0], message.data[1], message.data[2], message.data[3]);
-      //   txIntroack((uint8_t*) respBytes);
-      // } else
-      #ifdef M5PICO
-      if ((message.identifier & MASK_24BIT) == (INTRO_BOX)) { // received a box introduction
-        static uint8_t senderID[] = {message.data[0], message.data[1], message.data[2], message.data[3]}; // node that sent the intro
-        WebSerial.printf("RX[%d]: BOX intro: %02x:%02x:%02x:%02x\n", introMsgPtr, senderID[0], senderID[1], senderID[2], senderID[3]);
-        txIntroack((uint8_t*) senderID);
-        introMsgPtr = introMsgPtr + 1; // increment intro message pointer 2nd step
-      } 
-      if ((message.identifier & MASK_25BIT) == (INTRO_OUTPUT)) { // received an output introduction
-        static uint8_t rxSwCnt = message.data[4]; // rx switch count
-        static uint8_t senderID[] = {message.data[0], message.data[1], message.data[2], message.data[3]}; // node that sent the intro
-        WebSerial.printf("RX[%d]: OUTP intro: %02x:%02x:%02x:%02x CNT: %d\n", introMsgPtr, senderID[0], senderID[1], senderID[2], senderID[3], rxSwCnt);
-        txIntroack((uint8_t*) senderID);
-        introMsgPtr = introMsgPtr + 1; // increment intro message pointer 3rd step
+      if ((message.identifier & MASK_24BIT) == (INTRO_BOX)) { // box introduction
+        // check if the message arrived with a node id
+        if (haveRXID) {
+          // WebSerial.printf("RX: BOX intro %02x:%02x:%02x:%02x\n", rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
+          if (nodeSearch(rxNodeID) == NODE_NOT_FOUND) { // node not found in list
+            if (nodeListPtr < nodeListMax) { // check if we have space in the list
+              nodeList[nodeListPtr].nodeID[0] = rxNodeID[0]; // node id
+              nodeList[nodeListPtr].nodeID[1] = rxNodeID[1];
+              nodeList[nodeListPtr].nodeID[2] = rxNodeID[2];
+              nodeList[nodeListPtr].nodeID[3] = rxNodeID[3];
+              nodeList[nodeListPtr].nodeType  = message.identifier; // node type
+              nodeList[nodeListPtr].lastSeen  = getEpoch(); // set last seen time
+              nodeListPtr = nodeListPtr + 1; // increment node list pointer
+              WebSerial.printf("RX: ADDED BOX #%d: %02x:%02x:%02x:%02x\n", nodeListPtr, rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
+            } else {
+              WebSerial.println("RX: BOX LIST FULL");
+              // nodeListPtr = 0; // reset node list pointer
+            }
+          } else {
+            // WebSerial.println("RX: BOX ALREADY IN LIST");
+            // nodeList[nodePtr].lastSeen  = timeClient.getEpochTime(); // update last seen time
+          }
+          txIntroack((uint8_t*) rxNodeID); // ack introduction message
+        } else { // no remote node id
+          WebSerial.println("RX: BOX intro NO ID");
+        }
+      } else if ((message.identifier & MASK_25BIT) == (INTRO_OUTPUT)) { // output introduction
+        // check if the message arrived with a node id
+        if (haveRXID) {
+          WebSerial.println("RX: OUTP intro");
+          static uint8_t nodePtr = nodeSearch(rxNodeID); // node pointer
+          if (nodePtr == NODE_NOT_FOUND) { // node not found in list
+            WebSerial.println("RX: OUTP PARENT NODE NOT FOUND");
+          } else {
+            nodeList[nodePtr].lastSeen  = getEpoch(); // update last seen time
+            nodeList[nodePtr].subModules[nodeList[nodePtr].moduleCnt] = message.identifier; // set sub module type
+            nodeList[nodePtr].subModCnt[nodeList[nodePtr].moduleCnt] = message.data[4]; // set number of outputs
+            nodeList[nodePtr].moduleCnt = nodeList[nodePtr].moduleCnt + 1; // increment module count
+            WebSerial.printf("RX: ADDED OUTP TO NODE: %02x:%02x:%02x:%02x MOD: %d\n", rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3], message.identifier);
+          }
+          txIntroack((uint8_t*) rxNodeID);
+        }
       }
-      #endif
       break;
   }
 
@@ -736,7 +620,8 @@ void recvMsg(uint8_t *data, size_t len){
     #endif
     // digitalWrite(LED, HIGH);
   }
-  if (d=="OFF"){
+  if (d=="LIST"){
+    dumpNodeList();
     // digitalWrite(LED, LOW);
   }
 }
@@ -751,7 +636,6 @@ void printWifi() {
 
 void setup() {
 
-  #ifdef M5PICO
   introMsgCnt = 4; // number of intro messages
   introMsgPtr = 0; // start at zero
   introMsg[0] = (uint16_t) MSG_HALT_OPER; // send halt normal ops message
@@ -759,29 +643,7 @@ void setup() {
   introMsg[2] = 0; // first ack introduction
   introMsg[3] = 0; // second ack introduction
   introMsg[4] = (uint16_t) MSG_NORM_OPER; // send normal operation message  
-  #elif M5STACK
-  introMsgCnt = 2; // number of intro messages
-  introMsgPtr = 0; // start at zero
-  introMsg[0] = (uint16_t) BOX_SW_4RELAY; // intro message for 4 relay switch box
-  introMsg[1] = (uint16_t) OUT_MECH_RELAY; // intro message for mechanical relay
   
-  introMsgData[0] = 0x00; // send feature mask
-  introMsgData[1] = 4; // four relays  
-  #elif M5PICO2
-  introMsgCnt = 3; // number of intro messages
-  introMsgPtr = 0; // start at zero
-  introMsg[0] = (uint16_t) BOX_SW_4GANG; // intro message for 4 relay switch box
-  introMsg[1] = (uint16_t) OUT_HIGH_CURRENT_SW; // intro message for high current switch
-  introMsg[2] = (uint16_t) OUT_LOW_CURRENT_SW; // intro message for low current switch
-
-  
-  introMsgData[0] = 0x00; // send feature mask
-  introMsgData[1] = 2; // two high current switches
-  introMsgData[2] = 2; // two low current switches
-
-  #endif
-
-
   delay(5000);
 
   // Timer0_Cfg = timerBegin(0, 80, true);
@@ -813,14 +675,9 @@ void setup() {
   leds[0] = CRGB::Black;
   FastLED.show();
 
-  #ifdef M5PICO
   Serial.begin(9600, SERIAL_8N1, 19, 18); // alternate serial port
   Serial.println("Hello, world!");
-  #else
-  Serial.begin(115200); // alternate serial port
-  Serial.setDebugOutput(true);
-  #endif
-
+  
   WiFi.onEvent(WiFiEvent);
   WiFi.mode(WIFI_MODE_APSTA);
   WiFi.softAP(AP_SSID);
@@ -880,17 +737,14 @@ void setup() {
 
   server.begin();
   Serial.println("HTTP server started");
-
+  
   // WebSerial is accessible at "<IP Address>/webserial" in browser
   WebSerial.begin(&server);
   WebSerial.onMessage(recvMsg);
   Serial.print("[DEFAULT] ESP32 Board MAC Address: ");
   readMacAddress();
-  printWifi();
-
-  #ifndef M5PICO
-  FLAG_SEND_INTRODUCTION = true; // set flag to send introduction message
-  #endif
+  // printWifi();
+  configTime(UTC_OFFSET, UTC_OFFSET_DST, NTP_SERVER);
 }
 
 void loop() {
