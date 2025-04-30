@@ -67,6 +67,7 @@ struct remoteNode {
 struct remoteNode nodeList[8]; // list of remote nodes
 volatile uint8_t nodeListPtr = 0; // node list pointer
 const uint8_t nodeListMax = 8; // max number of nodes in the list
+const uint8_t modCntMax = 8; // max number of modules per node
 
 static bool driver_installed = false;
 
@@ -163,6 +164,34 @@ int nodeSearch(const uint8_t rxNodeID[4]) {
   return NODE_NOT_FOUND; // Node not found after searching the entire list
 }
 
+/**
+ * @brief Searches the global nodeList for a specified node ID.
+ *
+ * @param rxNodeID Pointer to the 4-byte node ID to search for. Should not be NULL.
+ * @return The index of the found node in nodeList if successful,
+ *         NODE_NOT_FOUND (-1) if the node ID is not found or rxNodeID is NULL.
+ */
+int modSearch(const uint8_t rxNodeID[4], const uint8_t modID) {
+  // Basic input validation
+  if (rxNodeID == NULL) {
+      return NODE_NOT_FOUND; // Cannot search for a NULL ID
+  }
+
+  for (uint8_t i = 0; i < nodeListMax; i++) {
+    // Compare the 4 bytes of the IDs
+    if (memcmp(nodeList[i].nodeID, rxNodeID, NODE_ID_LENGTH) == 0) { // matched node, now step through sub modules
+      for (uint8_t j = 0; j < nodeList[i].moduleCnt; j++) {
+        if (nodeList[i].subModules[j] == modID) { // matched sub module
+          return (int)i; // Return index of the found node
+        }
+      }
+      return NODE_NOT_FOUND; // Sub module not found, return not found flag
+    }
+  }
+
+  return NODE_NOT_FOUND; // Node not found after searching the entire list
+}
+
 // dump node list to WebSerial
 void dumpNodeList() {
   WebSerial.println(" ");
@@ -172,8 +201,8 @@ void dumpNodeList() {
   for (uint8_t i = 0; i < nodeListMax; i++) {
     if (nodeList[i].nodeID[0] != 0) { // check if node ID is not empty
       WebSerial.printf("Node %d: %02x:%02x:%02x:%02x\n", i, nodeList[i].nodeID[0], nodeList[i].nodeID[1], nodeList[i].nodeID[2], nodeList[i].nodeID[3]);
-      WebSerial.printf("Type: %x\n", nodeList[i].nodeType);
-      WebSerial.printf("Sub Modules: %x %x %x %x\n", nodeList[i].subModules[0], nodeList[i].subModules[1], nodeList[i].subModules[2], nodeList[i].subModules[3]);
+      WebSerial.printf("Type: %03x\n", nodeList[i].nodeType);
+      WebSerial.printf("Sub Modules: %03x %03x %03x %03x\n", nodeList[i].subModules[0], nodeList[i].subModules[1], nodeList[i].subModules[2], nodeList[i].subModules[3]);
       WebSerial.printf("Sub Module Count: %d %d %d %d\n", nodeList[i].subModCnt[0], nodeList[i].subModCnt[1], nodeList[i].subModCnt[2], nodeList[i].subModCnt[3]);
       WebSerial.printf("Module Count: %d\n", nodeList[i].moduleCnt);
       WebSerial.printf("Last Seen: %lu\n", nodeList[i].lastSeen);
@@ -458,16 +487,26 @@ static void handle_rx_message(twai_message_t &message) {
       } else if ((message.identifier & MASK_25BIT) == (INTRO_OUTPUT)) { // output introduction
         // check if the message arrived with a node id
         if (haveRXID) {
-          WebSerial.println("RX: OUTP intro");
-          static uint8_t nodePtr = nodeSearch(rxNodeID); // node pointer
+          static int nodePtr = nodeSearch(rxNodeID); // node pointer
+          // WebSerial.printf("RX: OUTP intro PTR %i\n", nodePtr);
           if (nodePtr == NODE_NOT_FOUND) { // node not found in list
             WebSerial.println("RX: OUTP PARENT NODE NOT FOUND");
           } else {
-            nodeList[nodePtr].lastSeen  = getEpoch(); // update last seen time
-            nodeList[nodePtr].subModules[nodeList[nodePtr].moduleCnt] = message.identifier; // set sub module type
-            nodeList[nodePtr].subModCnt[nodeList[nodePtr].moduleCnt] = message.data[4]; // set number of outputs
-            nodeList[nodePtr].moduleCnt = nodeList[nodePtr].moduleCnt + 1; // increment module count
-            WebSerial.printf("RX: ADDED OUTP TO NODE: %02x:%02x:%02x:%02x MOD: %d\n", rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3], message.identifier);
+            // WebSerial.printf("RX: OUTP PARENT NODE FOUND, checking for room\n");
+            if (nodeList[nodePtr].moduleCnt < modCntMax) { // check if we have space in the list
+              if (modSearch(rxNodeID, message.identifier) == NODE_NOT_FOUND) { // check if the sub module is already in the list
+                nodeList[nodePtr].lastSeen  = getEpoch(); // update last seen time
+                nodeList[nodePtr].subModules[nodeList[nodePtr].moduleCnt] = message.identifier; // set sub module type
+                nodeList[nodePtr].subModCnt[nodeList[nodePtr].moduleCnt] = message.data[4]; // set number of outputs
+                nodeList[nodePtr].moduleCnt = nodeList[nodePtr].moduleCnt + 1; // increment module count
+                WebSerial.printf("RX: OUTP %03x ADDED TO NODE %02x:%02x:%02x:%02x\n", message.identifier, rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
+              } else {
+                WebSerial.printf("RX: OUTP %03x ALREADY ON NODE %02x:%02x:%02x:%02x\n", message.identifier, rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
+              }
+            } else {
+              WebSerial.println("RX: NODE MODULE LIST FULL");
+              // nodeList[nodePtr].moduleCnt = 0; // reset module count
+            }
           }
           txIntroack((uint8_t*) rxNodeID);
         }
