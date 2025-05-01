@@ -31,6 +31,7 @@ static AsyncWebServer server(80);
 
 // esp32 native TWAI / CAN library
 #include "driver/twai.h"
+TaskHandle_t canbus_task_handle = NULL; // task handle for canbus task
 
 // my canbus stuff
 #include "canbus_msg.h"
@@ -300,6 +301,7 @@ static void send_message(const uint16_t msgID, const uint8_t *msgData, const uin
   if (twai_transmit(&message, pdMS_TO_TICKS(3000)) == ESP_OK) {
     // ESP_LOGI(TAG, "Message queued for transmission\n");
     // printf("Message queued for transmission\n");
+    WebSerial.printf("TX: MSG: %03x WITH %u DATA", msgID, dlc);
     // WebSerial.printf("TX: MSG: %03x Data: ", msgID);
     // for (int i = 0; i < dlc; i++) {
     //   WebSerial.printf("%02x ", message.data[i]);
@@ -347,16 +349,20 @@ static void rxDisplayMode(uint8_t *data, uint8_t displayMode) {
 }
 
 // assemble message to change output switch state on remote nodes
-static void txSwitchState(uint8_t *data, uint8_t switchID, uint8_t swState) {
-  static uint8_t txDLC = 5;
-  static uint8_t dataBytes[] = {data[0], data[1], data[2], data[3], switchID}; // set node id and switch ID
+static void txSwitchState(const uint8_t *nodeID, const uint8_t switchID, const uint8_t swState) {
+  if (nodeID == NULL) {
+    // WebSerial.println("Invalid node ID");
+    return;
+  }
+
+  uint8_t txDLC = 5;
+  uint8_t dataBytes[] = {nodeID[0], nodeID[1], nodeID[2], nodeID[3], switchID}; // set node id and switch ID
   
-  WebSerial.printf("TX: To %02x:%02x:%02x:%02x Switch %d State %d\n", data[0],data[1],data[2],data[3], switchID, swState);
+  // WebSerial.printf("TX: To %02x:%02x:%02x:%02x Switch %d State %d\n", nodeID[0],nodeID[1],nodeID[2],nodeID[3], switchID, swState);
 
   switch (swState) {
     case 0: // switch off
       send_message(SW_SET_OFF, dataBytes, txDLC);
-
       break;
     case 1: // switch on
       send_message(SW_SET_ON, dataBytes, txDLC);
@@ -365,7 +371,7 @@ static void txSwitchState(uint8_t *data, uint8_t switchID, uint8_t swState) {
       send_message(SW_MOM_PRESS, dataBytes, txDLC);
       break;
     default: // unsupported state
-      WebSerial.println("Invalid switch state for transmission");
+      // WebSerial.println("Invalid switch state for transmission");
       break;
   }
 }
@@ -399,9 +405,9 @@ static void txSendHalt(const uint8_t* txNodeID) {
   send_message(MSG_HALT_OPER, txNodeID, 4);
 }
 
-static void txIntroack(const uint8_t* txNodeID) {
+static void txIntroack(const u_int16_t msgID, const uint8_t* txNodeID) {
   // uint8_t dataBytes[] = {0xA0, 0xA0, 0x55, 0x55}; // data bytes
-  send_message(ACK_INTRODUCTION, txNodeID, 4);
+  send_message(msgID, txNodeID, 4);
 }
 
 // eventually check on connected nodes here
@@ -447,7 +453,8 @@ static void handle_rx_message(twai_message_t &message) {
       WebSerial.printf("RX: NO MATCH MSG: 0x%x NO DATA", message.identifier);
     }
   }
-
+  
+  uint8_t rxSwitchID = message.data[4]; // get switch ID
   switch (message.identifier) {
     case SET_DISPLAY_OFF:          // set display off
       rxDisplayMode(message.data, 0); 
@@ -461,28 +468,25 @@ static void handle_rx_message(twai_message_t &message) {
     case SET_DISPLAY_FLASH:          // flash display
       rxDisplayMode(message.data, 3); 
       break;
-    case DATA_OUTPUT_SWITCH_OFF:          
-      // txSwitchState((uint8_t *)otherNodeID, 2, 1);
+    case DATA_OUTPUT_SWITCH_OFF:   // we received a switch off message, send a switch on message
+      txSwitchState((uint8_t *)rxNodeID, rxSwitchID, 1);
       break;
-    case DATA_OUTPUT_SWITCH_ON:
-      // txSwitchState((uint8_t *)otherNodeID, 2, 2);
+    case DATA_OUTPUT_SWITCH_ON:    // we received a switch on message, send a switch momentary message
+      txSwitchState((uint8_t *)rxNodeID, rxSwitchID, 2);
       break;      
-    case DATA_OUTPUT_SWITCH_MOM_PUSH:
-      // txSwitchState((uint8_t *)otherNodeID, 2, 0);
+    case DATA_OUTPUT_SWITCH_MOM_PUSH: // we received a momentary switch message, send a switch off message
+      txSwitchState((uint8_t *)rxNodeID, rxSwitchID, 0);
       // FLAG_BEGIN_NORMAL_OPER = false; // clear flag to halt normal operation
       // vTaskDelay(10);
-      // txSendHalt((uint8_t *)otherNodeID); // send halt message to other node
+      // txSendHalt((uint8_t *)rxNodeID); // send halt message to other node
       // introMsgPtr = introMsgPtr + 1;
       break;
     case REQ_INTERFACES: // request for interface introduction     
       WebSerial.printf("RX: IFACE intro req, responding to %02x:%02x:%02x:%02x\n", message.data[0], message.data[1], message.data[2], message.data[3]);
       // FLAG_SEND_INTRODUCTION = true; // set flag to send introduction message
       break;
-    case REQ_BOXES: // request for box introduction
-      break;
-    case ACK_INTRODUCTION:
 
-      break;
+
     
     default:
       if ((message.identifier & MASK_24BIT) == (INTRO_BOX)) { // box introduction
@@ -510,7 +514,7 @@ static void handle_rx_message(twai_message_t &message) {
             // WebSerial.println("RX: BOX ALREADY IN LIST");
             nodeList[nodePtr].lastSeen  = getEpoch(); // update last seen time
           }
-          txIntroack((uint8_t*) rxNodeID); // ack introduction message
+          txIntroack(ACK_SWITCHBOX, rxNodeID); // ack introduction message
         }
       } else if ((message.identifier & MASK_25BIT) == (INTRO_OUTPUT)) { // output introduction
         // check if the message arrived with a node id
@@ -538,7 +542,7 @@ static void handle_rx_message(twai_message_t &message) {
               // nodeList[nodePtr].moduleCnt = 0; // reset module count
             }
           }
-          txIntroack((uint8_t*) rxNodeID);
+          txIntroack(ACK_SWITCHBOX, rxNodeID);
         }
       }
       break;
@@ -557,9 +561,7 @@ void TaskTWAI(void *pvParameters) {
 
   // Initialize configuration structures using macro initializers
   twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)CAN_TX_PIN, (gpio_num_t)CAN_RX_PIN, TWAI_MODE_NORMAL);  // TWAI_MODE_NO_ACK , TWAI_MODE_LISTEN_ONLY , TWAI_MODE_NORMAL
-  #ifdef M5PICO
-  g_config.rx_queue_len = 10; // RX queue length
-  #endif
+  g_config.rx_queue_len = 20; // RX queue length
   twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();  //Look in the api-reference for other speed sets.
   twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
@@ -651,7 +653,7 @@ void TaskTWAI(void *pvParameters) {
         handle_rx_message(message);
       }
     }
-    // Send message
+    // polling goes here
     unsigned long currentMillis = millis();
     if (currentMillis - previousMillis >= TRANSMIT_RATE_MS) { // run this code every 1000 ms
       previousMillis = currentMillis;
@@ -670,29 +672,12 @@ void TaskTWAI(void *pvParameters) {
       //   }
       // }
       nodeCheckStatus();
-      printEpoch();
+      // printEpoch();
+      WebSerial.printf(".");
+      Serial.printf(".");
     }
     vTaskDelay(10);
 
-  }
-}
-
-void recvMsg(uint8_t *data, size_t len){
-  WebSerial.println("Received Data...");
-  String d = "";
-  for(int i=0; i < len; i++){
-    d += char(data[i]);
-  }
-  WebSerial.println(d);
-  if (d == "ON"){
-    #ifdef M5PICO
-    send_message(REQ_BOXES, (uint8_t*) myNodeID, 4); // send introduction request
-    #endif
-    // digitalWrite(LED, HIGH);
-  }
-  if (d=="LIST"){
-    dumpNodeList();
-    // digitalWrite(LED, LOW);
   }
 }
 
@@ -704,11 +689,43 @@ void printWifi() {
   Serial.println(WiFi.localIP());
 }
 
+
+void recvMsg(uint8_t *data, size_t len){
+  WebSerial.println("Received Data...");
+  String d = "";
+  for(int i=0; i < len; i++){
+    d += char(data[i]);
+  }
+  WebSerial.println(d);
+  if (d == "ON"){
+    send_message(REQ_SWITCHBOX, (uint8_t*) myNodeID, 4); // send introduction request
+    // digitalWrite(LED, HIGH);
+  }
+  if (d == "C0"){
+    vTaskSuspend(canbus_task_handle); // suspend canbus task
+    // digitalWrite(LED, HIGH);
+  }
+  if (d == "C1"){
+    vTaskResume(canbus_task_handle); // resume canbus task
+    // digitalWrite(LED, HIGH);
+  }
+  if (d == "W"){
+    printWifi();
+    // digitalWrite(LED, HIGH);
+  }
+
+  if (d=="LIST"){
+    dumpNodeList();
+    // digitalWrite(LED, LOW);
+  }
+}
+
+
 void setup() {
 
   introMsgCnt = 5; // number of intro messages
   introMsgPtr = 0; // start at zero
-  introMsg[1] = (uint16_t) REQ_BOXES; // ask for boxes
+  introMsg[1] = (uint16_t) REQ_SWITCHBOX; // ask for boxes
   introMsg[2] = 0; // first ack introduction
   introMsg[3] = 0; // second ack introduction
   introMsg[4] = (uint16_t) MSG_NORM_OPER; // send normal operation message  
@@ -720,15 +737,15 @@ void setup() {
   // timerAlarmWrite(Timer0_Cfg, 100000, true);
   // timerAlarmEnable(Timer0_Cfg);
 
-  xTaskCreate(
+  xTaskCreatePinnedToCore(
     TaskTWAI,     // Task function.
     "Task TWAI",  // name of task.
-    3172,         // Stack size of task
+    4096,         // Stack size of task
     NULL,         // parameter of the task
     1,            // priority of the task
-    NULL          // Task handle to keep track of created task
-  );              // pin task to core 0
-  //tskNO_AFFINITY); // pin task to core is automatic depends the load of each core
+    &canbus_task_handle,           // Task handle to keep track of created task
+    tskNO_AFFINITY); // allow task to run on either core, automatic depends the load of each core
+  // );              
 
   // xTaskCreate(
   //   TaskFLED,     // Task function.

@@ -45,16 +45,18 @@ const uint8_t FEATURE_DISP_LCD[] = {0x80,0x48};     // feature mask for non-touc
 #define MSG_NORM_OPER 0x108 // message to all nodes to being normal operation, sent after introduction and enumeration are complete DLC 
 #define MSG_HALT_OPER 0x109 // message to all nodes to stop transmitting messages and wait for instructions DLC 
 
-#define SW_SET_MODE 0x10A // switch set output mode (pwm, one-shot, solid-state, blinking, strobing) DLC 6
-#define SW_SET_OFF 0x10B // switch off DLC 5
-#define SW_SET_ON 0x10C // switch on DLC 5
-#define SW_MOM_PRESS 0x10D // switch momentary press DLC 5
-#define SW_SET_MOM_DUR 0x10E // set momentary switch duration ms DLC 7
-#define SW_SET_PWM_DUTY 0x10F // switch set pwm duty DLC 7
-#define SW_SET_PWM_FREQ 0x110 // switch set pwm freq DLC 7
-#define SW_SET_BLINK_DELAY 0x111 // switch set blink delay in tenths of a second 1-100 DLC 7
-#define SW_SET_STROBE_PAT 0x112 // switch set strobe pattern DLC 6
-#define SW_SET_STATE_MEM 0x113 // enable / disable switch last state memory DLC 6
+#define ACK_SWITCHBOX 0x10A // acknowledge introduction, clear flag on remote device DLC 4
+#define REQ_SWITCHBOX 0x10B // request switchbox introductions DLC 4
+#define SW_SET_MODE 0x10C // set switch mode DLC 6
+#define SW_SET_OFF 0x10D // switch off DLC 5
+#define SW_SET_ON 0x10E // switch on DLC 5
+#define SW_MOM_PRESS 0x10F // switch momentary press DLC 5
+#define SW_SET_MOM_DUR 0x110 // set momentary switch duration ms DLC 7
+#define SW_SET_PWM_DUTY 0x111 // switch set pwm duty DLC 7
+#define SW_SET_PWM_FREQ 0x112 // switch set pwm freq DLC 7
+#define SW_SET_BLINK_DELAY 0x113 // switch set blink delay in tenths of a second 1-100 DLC 7
+#define SW_SET_STROBE_PAT 0x114 // switch set strobe pattern DLC 6
+#define SW_SET_STATE_MEM 0x115 // enable / disable switch last state memory DLC 6
 
 #define SET_DISPLAY_OFF 0x200 // set display off DLC 5
 #define SET_DISPLAY_ON 0x201 // set display on DLC 5
@@ -81,7 +83,7 @@ const uint8_t FEATURE_DISP_LCD[] = {0x80,0x48};     // feature mask for non-touc
 #define DISPLAY_DATA_MSG 0x21A // display data msg DLC 8
 #define DISPLAY_CONF_MSG 0x21B // display conf msg DLC 8
 
-#define ACK_INTRODUCTION 0x400 // acknowledge introduction, clear flag on remote device DLC 4
+// #define ACK_INTRODUCTION 0x400 // acknowledge introduction, clear flag on remote device DLC 4
 #define REQ_INTERFACES 0x401 // req interfaces DLC 4
 #define REQ_BUTTONS 0x402 // req buttons DLC 4
 #define REQ_OUTPUTS 0x403 // req outputs DLC 4
@@ -92,7 +94,7 @@ const uint8_t FEATURE_DISP_LCD[] = {0x80,0x48};     // feature mask for non-touc
 #define REQ_CLOSURE_INPUTS 0x408 // req closure inputs DLC 4
 #define REQ_AMBIENT_LIGHT_SENSORS 0x409 // req ambient light sensors DLC 4
 #define REQ_IMU_SENSORS 0x40A // req imu sensors DLC 4
-#define REQ_BOXES 0x40B // req boxes DLC 4
+// #define REQ_BOXES 0x40B // req boxes DLC 4
 #define REQ_NODECHECK 0x40C // remote nodes should respond with their node id and last boot timestamp DLC 4
 #define REQ_HEALTHCHECK 0x40D // remote nodes should respond with diagnostic sensor data DLC 4
 
