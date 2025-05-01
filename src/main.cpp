@@ -62,8 +62,10 @@ struct remoteNode {
   uint8_t   subModCnt[4]   = {0,0,0,0};
   // total sub module count
   uint8_t   moduleCnt      = 0; 
-  // epoch timestamp
+  // last time message received from node 
   uint32_t  lastSeen       = 0;
+  // first time message received from node 
+  uint32_t  firstSeen       = 0;
 };
 
 struct remoteNode nodeList[8]; // list of remote nodes
@@ -148,6 +150,18 @@ unsigned long getEpoch() {
   return now;
 }
 
+// print timestamp to webserial console
+static void printEpoch() {
+  time_t now;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    //Serial.println("Failed to obtain time");
+    return;
+  }
+  time(&now);
+  WebSerial.printf("%lu\n", now);
+}
+
 /**
  * @brief Searches the global nodeList for a specified node ID.
  *
@@ -213,6 +227,7 @@ void dumpNodeList() {
       WebSerial.printf("Sub Modules: %03x %03x %03x %03x\n", nodeList[i].subModules[0], nodeList[i].subModules[1], nodeList[i].subModules[2], nodeList[i].subModules[3]);
       WebSerial.printf("Sub Module Count: %d %d %d %d\n", nodeList[i].subModCnt[0], nodeList[i].subModCnt[1], nodeList[i].subModCnt[2], nodeList[i].subModCnt[3]);
       WebSerial.printf("Module Count: %d\n", nodeList[i].moduleCnt);
+      WebSerial.printf("First Seen: %lu\n", nodeList[i].firstSeen);
       WebSerial.printf("Last Seen: %lu\n", nodeList[i].lastSeen);
     }
   }
@@ -263,6 +278,12 @@ static void send_message(const uint16_t msgID, const uint8_t *msgData, const uin
   static twai_message_t message;
   // static uint8_t dataBytes[] = {0, 0, 0, 0, 0, 0, 0, 0}; // initialize dataBytes array with 8 bytes of 0
 
+  if ((msgData == NULL) || (dlc > 8)) {
+    // exit if msgData is NULL or DLC more than 8 bytes
+    return;
+  }
+
+
   leds[0] = CRGB::Blue;
   FastLED.show();
 
@@ -279,11 +300,11 @@ static void send_message(const uint16_t msgID, const uint8_t *msgData, const uin
   if (twai_transmit(&message, pdMS_TO_TICKS(3000)) == ESP_OK) {
     // ESP_LOGI(TAG, "Message queued for transmission\n");
     // printf("Message queued for transmission\n");
-    WebSerial.printf("TX: MSG: %03x Data: ", msgID);
-    for (int i = 0; i < dlc; i++) {
-      WebSerial.printf("%02x ", message.data[i]);
-    }
-    WebSerial.printf("\n");
+    // WebSerial.printf("TX: MSG: %03x Data: ", msgID);
+    // for (int i = 0; i < dlc; i++) {
+    //   WebSerial.printf("%02x ", message.data[i]);
+    // }
+    // WebSerial.printf("\n");
   } else {
     leds[0] = CRGB::Red;
     FastLED.show();
@@ -359,17 +380,17 @@ static void txSwitchMode(uint8_t *data, uint8_t switchID, uint8_t switchMode) {
 
 // assemble node introduction message
 static void txIntroduction() {
-    if (introMsgPtr == 0) {
-      static uint8_t dataBytes[6] = { myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3], 
-                                      myNodeFeatureMask[0], myNodeFeatureMask[1] }; 
+    // if (introMsgPtr == 0) {
+    //   static uint8_t dataBytes[6] = { myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3], 
+    //                                   myNodeFeatureMask[0], myNodeFeatureMask[1] }; 
 
-      send_message(introMsg[introMsgPtr], dataBytes, sizeof(dataBytes));
-    } else {
-      static uint8_t dataBytes[5] = { myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3], 
-                                      introMsgData[introMsgPtr] }; 
+    //   send_message(introMsg[introMsgPtr], dataBytes, sizeof(dataBytes));
+    // } else {
+    //   static uint8_t dataBytes[5] = { myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3], 
+    //                                   introMsgData[introMsgPtr] }; 
 
-      send_message(introMsg[introMsgPtr], dataBytes, sizeof(dataBytes));
-    }
+    //   send_message(introMsg[introMsgPtr], dataBytes, sizeof(dataBytes));
+    // }
 }
 
 // send command to clear normal op flag on remote
@@ -397,8 +418,6 @@ static void handle_rx_message(twai_message_t &message) {
 
   leds[0] = CRGB::Orange;
   FastLED.show();
-
-  WebSerial.printf("TIMESTAMP: %lu\n", getEpoch());
 
   // check if message contains enough data to have node id
   if (message.data_length_code > 3) { 
@@ -480,7 +499,7 @@ static void handle_rx_message(twai_message_t &message) {
               nodeList[nodeListPtr].nodeType  = message.identifier; // node type
               nodeList[nodeListPtr].featureMask[0] = message.data[4]; // feature mask
               nodeList[nodeListPtr].featureMask[1] = message.data[5]; // feature mask
-              nodeList[nodeListPtr].lastSeen  = getEpoch(); // set last seen time
+              nodeList[nodeListPtr].firstSeen  = getEpoch(); // set first seen time
               nodeListPtr = nodeListPtr + 1; // increment node list pointer
               WebSerial.printf("RX: ADDED BOX #%d: %02x:%02x:%02x:%02x\n", nodeListPtr, rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
             } else {
@@ -579,6 +598,7 @@ void TaskTWAI(void *pvParameters) {
       vTaskDelay(1000);
       return;
     }
+   
     // Check if alert happened
     uint32_t alerts_triggered;
     twai_read_alerts(&alerts_triggered, pdMS_TO_TICKS(POLLING_RATE_MS));
@@ -633,24 +653,24 @@ void TaskTWAI(void *pvParameters) {
     }
     // Send message
     unsigned long currentMillis = millis();
-    if (currentMillis - previousMillis >= TRANSMIT_RATE_MS) {
-      leds[0] = CRGB::Blue;
-      FastLED.show();
+    if (currentMillis - previousMillis >= TRANSMIT_RATE_MS) { // run this code every 1000 ms
       previousMillis = currentMillis;
-      #ifdef M5PICO
-      if (introMsgPtr < introMsgCnt) {
-        if (introMsg[introMsgPtr] > 0) {
-          send_message(introMsg[introMsgPtr], (uint8_t*) myNodeID, 4); // send introduction request
-        }
-        if (introMsgPtr == 0) {
-          static uint8_t dataBytes[4] = { myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3] }; 
+      leds[0] = CRGB::DarkBlue;
+      FastLED.show();
+      // if (introMsgPtr < introMsgCnt) {
+      //   WebSerial.printf("TX: Intro message ptr %d\n", introMsgPtr);
+      //   if (introMsg[introMsgPtr] > 0) {
+      //     send_message(introMsg[introMsgPtr], (uint8_t*) myNodeID, 4); // send introduction request
+      //   }
+      //   if (introMsgPtr == 0) {
+      //     uint8_t dataBytes[4] = { myNodeID[0], myNodeID[1], myNodeID[2], myNodeID[3] }; 
 
-          send_message(REQ_BOXES, dataBytes, sizeof(dataBytes));
-          introMsgPtr = introMsgPtr + 1; // increment intro message pointer 1st step
-        }
-      }
-      #endif
+      //     send_message(introMsg[introMsgPtr], dataBytes, sizeof(dataBytes));
+      //     introMsgPtr = introMsgPtr + 1; // increment intro message pointer 1st step
+      //   }
+      // }
       nodeCheckStatus();
+      printEpoch();
     }
     vTaskDelay(10);
 
@@ -666,7 +686,7 @@ void recvMsg(uint8_t *data, size_t len){
   WebSerial.println(d);
   if (d == "ON"){
     #ifdef M5PICO
-    send_message(introMsg[0], (uint8_t*) myNodeID, 4); // send introduction request
+    send_message(REQ_BOXES, (uint8_t*) myNodeID, 4); // send introduction request
     #endif
     // digitalWrite(LED, HIGH);
   }
@@ -686,9 +706,8 @@ void printWifi() {
 
 void setup() {
 
-  introMsgCnt = 4; // number of intro messages
+  introMsgCnt = 5; // number of intro messages
   introMsgPtr = 0; // start at zero
-  introMsg[0] = (uint16_t) MSG_HALT_OPER; // send halt normal ops message
   introMsg[1] = (uint16_t) REQ_BOXES; // ask for boxes
   introMsg[2] = 0; // first ack introduction
   introMsg[3] = 0; // second ack introduction
