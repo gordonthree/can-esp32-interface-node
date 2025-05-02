@@ -45,18 +45,18 @@ const uint8_t FEATURE_DISP_LCD[] = {0x80,0x48};     // feature mask for non-touc
 #define MSG_NORM_OPER 0x108 // message to all nodes to being normal operation, sent after introduction and enumeration are complete DLC 
 #define MSG_HALT_OPER 0x109 // message to all nodes to stop transmitting messages and wait for instructions DLC 
 
-#define ACK_SWITCHBOX 0x10A // acknowledge introduction, clear flag on remote device DLC 4
-#define REQ_SWITCHBOX 0x10B // request switchbox introductions DLC 4
-#define SW_SET_MODE 0x10C // set switch mode DLC 6
-#define SW_SET_OFF 0x10D // switch off DLC 5
-#define SW_SET_ON 0x10E // switch on DLC 5
-#define SW_MOM_PRESS 0x10F // switch momentary press DLC 5
-#define SW_SET_MOM_DUR 0x110 // set momentary switch duration ms DLC 7
-#define SW_SET_PWM_DUTY 0x111 // switch set pwm duty DLC 7
-#define SW_SET_PWM_FREQ 0x112 // switch set pwm freq DLC 7
-#define SW_SET_BLINK_DELAY 0x113 // switch set blink delay in tenths of a second 1-100 DLC 7
-#define SW_SET_STROBE_PAT 0x114 // switch set strobe pattern DLC 6
-#define SW_SET_STATE_MEM 0x115 // enable / disable switch last state memory DLC 6
+#define ACK_SWITCHBOX 0x110 // acknowledge introduction, clear flag on remote device DLC 4
+#define REQ_SWITCHBOX 0x111 // request switchbox introductions DLC 4
+#define SW_SET_MODE 0x112 // set switch mode DLC 6
+#define SW_SET_OFF 0x113 // switch off DLC 5
+#define SW_SET_ON 0x114 // switch on DLC 5
+#define SW_MOM_PRESS 0x115 // switch momentary press DLC 5
+#define SW_SET_MOM_DUR 0x116 // set momentary switch duration ms DLC 7
+#define SW_SET_PWM_DUTY 0x117 // switch set pwm duty DLC 7
+#define SW_SET_PWM_FREQ 0x118 // switch set pwm freq DLC 7
+#define SW_SET_BLINK_DELAY 0x119 // switch set blink delay in tenths of a second 1-100 DLC 7
+#define SW_SET_STROBE_PAT 0x11A // switch set strobe pattern DLC 6
+#define SW_SET_STATE_MEM 0x11B // enable / disable switch last state memory DLC 6
 
 #define SET_DISPLAY_OFF 0x200 // set display off DLC 5
 #define SET_DISPLAY_ON 0x201 // set display on DLC 5
