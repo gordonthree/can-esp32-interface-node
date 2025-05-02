@@ -229,7 +229,12 @@ static void dumpNodeList() {
   WebSerial.println(" ");
   WebSerial.println(" ");
   WebSerial.println("--------------------------------------------------------------------------");
-  WebSerial.println("Node List:");
+  if (nodeListPtr < 1) {
+    WebSerial.println("Node list is empty!");
+
+  } else { 
+    WebSerial.printf("There are %u nodes:", nodeListPtr); 
+  }
   for (uint8_t i = 0; i < nodeListMax; i++) {
     if (nodeList[i].nodeID[0] != 0) { // check if node ID is not empty
       WebSerial.printf("Node %d: %02x:%02x:%02x:%02x\n", i, nodeList[i].nodeID[0], nodeList[i].nodeID[1], nodeList[i].nodeID[2], nodeList[i].nodeID[3]);
@@ -499,10 +504,9 @@ static void handle_rx_message(twai_message_t &message) {
     
     default:
       if ((message.identifier & MASK_24BIT) == (INTRO_BOX)) { // box introduction
-        // check if the message arrived with a node id
-        if (haveRXID) {
-          int nodePtr = nodeSearch(rxNodeID); // node pointer
-          // WebSerial.printf("RX: BOX intro %02x:%02x:%02x:%02x PTR:%i\n", rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3], nodePtr);
+        if (haveRXID) { // check if the message arrived with a node id
+          int nodePtr = nodeSearch(rxNodeID); // check if this node is already in the list
+          WebSerial.printf("RX: BOX intro %02x:%02x:%02x:%02x PTR:%i\n", rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3], nodePtr);
           if (nodePtr == NODE_NOT_FOUND) { // node not found in list
             if (nodeListPtr < nodeListMax) { // check if we have space in the list
               nodeList[nodeListPtr].nodeID[0] = rxNodeID[0]; // node id
@@ -520,7 +524,7 @@ static void handle_rx_message(twai_message_t &message) {
               // nodeListPtr = 0; // reset node list pointer
             }
           } else {
-            // WebSerial.println("RX: BOX ALREADY IN LIST");
+            WebSerial.printf("RX: BOX ALREADY IN LIST PTR %u\n", nodePtr);
             // nodeList[nodePtr].lastSeen  = getEpoch(); // update last seen time
           }
           txIntroack(ACK_SWITCHBOX, rxNodeID); // ack introduction message
