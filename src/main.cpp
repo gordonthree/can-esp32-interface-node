@@ -225,7 +225,7 @@ static void updateLasteen(const uint8_t* rxNodeID) {
 }
 
 // dump node list to WebSerial
-void dumpNodeList() {
+static void dumpNodeList() {
   WebSerial.println(" ");
   WebSerial.println(" ");
   WebSerial.println("--------------------------------------------------------------------------");
@@ -241,6 +241,7 @@ void dumpNodeList() {
       WebSerial.printf("First Seen: %lu\n", nodeList[i].firstSeen);
       WebSerial.printf("Last Seen: %lu\n", nodeList[i].lastSeen);
     }
+    WebSerial.println(" ");
   }
   WebSerial.println("--------------------------------------------------------------------------");
   WebSerial.println(" ");
