@@ -214,6 +214,16 @@ int modSearch(const uint8_t rxNodeID[4], const uint16_t modID) {
   return NODE_NOT_FOUND; // Node not found after searching the entire list
 }
 
+static void updateLasteen(const uint8_t* rxNodeID) {
+  // update last seen time for node
+  for (uint8_t i = 0; i < nodeListMax; i++) {
+    if (memcmp(nodeList[i].nodeID, rxNodeID, NODE_ID_LENGTH) == 0) { // check if node ID matches
+      nodeList[i].lastSeen = getEpoch(); // update last seen time
+      break;
+    }
+  }
+}
+
 // dump node list to WebSerial
 void dumpNodeList() {
   WebSerial.println(" ");
@@ -301,7 +311,7 @@ static void send_message(const uint16_t msgID, const uint8_t *msgData, const uin
   if (twai_transmit(&message, pdMS_TO_TICKS(3000)) == ESP_OK) {
     // ESP_LOGI(TAG, "Message queued for transmission\n");
     // printf("Message queued for transmission\n");
-    WebSerial.printf("TX: MSG: %03x WITH %u DATA", msgID, dlc);
+    // WebSerial.printf("TX: MSG: %03x WITH %u DATA", msgID, dlc);
     // WebSerial.printf("TX: MSG: %03x Data: ", msgID);
     // for (int i = 0; i < dlc; i++) {
     //   WebSerial.printf("%02x ", message.data[i]);
@@ -355,10 +365,10 @@ static void txSwitchState(const uint8_t *nodeID, const uint8_t switchID, const u
     return;
   }
 
-  uint8_t txDLC = 5;
-  uint8_t dataBytes[] = {nodeID[0], nodeID[1], nodeID[2], nodeID[3], switchID}; // set node id and switch ID
+  const uint8_t txDLC = 5;
+  const uint8_t dataBytes[] = {nodeID[0], nodeID[1], nodeID[2], nodeID[3], switchID}; // set node id and switch ID
   
-  // WebSerial.printf("TX: To %02x:%02x:%02x:%02x Switch %d State %d\n", nodeID[0],nodeID[1],nodeID[2],nodeID[3], switchID, swState);
+  WebSerial.printf("TX: %02x:%02x:%02x:%02x Switch %d State %d\n", nodeID[0],nodeID[1],nodeID[2],nodeID[3], switchID, swState);
 
   switch (swState) {
     case 0: // switch off
@@ -377,10 +387,10 @@ static void txSwitchState(const uint8_t *nodeID, const uint8_t switchID, const u
 }
 
 // assemble message to change output switch mode on remote nodes
-static void txSwitchMode(uint8_t *data, uint8_t switchID, uint8_t switchMode) {
-  static uint8_t txDLC = 6;
-  static uint8_t dataBytes[] = {data[0], data[1], data[2], data[3], switchID, switchMode}; // set node id switch ID
-  WebSerial.printf("TX: To %02x:%02x:%02x:%02x Switch %d Mode %d\n",data[0], data[1], data[2], data[3], switchID, switchMode);
+static void txSwitchMode(const uint8_t *data, const uint8_t switchID, const uint8_t switchMode) {
+  const uint8_t txDLC = 6;
+  const uint8_t dataBytes[] = {data[0], data[1], data[2], data[3], switchID, switchMode}; // set node id switch ID
+  WebSerial.printf("TX: %02x:%02x:%02x:%02x Switch %d Mode %d\n",data[0], data[1], data[2], data[3], switchID, switchMode);
   send_message(SW_SET_MODE, dataBytes, sizeof(dataBytes)); // send message to set switch mode
 }
 
@@ -430,13 +440,14 @@ static void handle_rx_message(twai_message_t &message) {
     memcpy((void *)rxNodeID, (const void *)message.data, 4); // copy node id from message
     msgIDComp = memcmp((const void *)rxNodeID, (const void *)myNodeID, 4);
     haveRXID = true; // set flag to true if message contains node id
+    updateLasteen(rxNodeID);  // update last seen time for this node
 
     if (msgIDComp == 0) { // message is for us
       msgFlag = true; // message is for us, set flag to true
     }
   }
 
-  if (message.data_length_code > 0) { // message contains data, check if it is for us
+/*   if (message.data_length_code > 0) { // message contains data, check if it is for us
     if (msgFlag) {
       WebSerial.printf("RX: ID MATCH MSG: 0x%x WITH Data\n", message.identifier);
     } else {
@@ -445,15 +456,16 @@ static void handle_rx_message(twai_message_t &message) {
     /* for (int i = 0; i < message.data_length_code; i++) {
       WebSerial.printf(" %d = %02x", i, message.data[i]);
     }
-    WebSerial.println(""); */
+    WebSerial.println(""); 
   } else {
     if (msgFlag) {
       WebSerial.printf("RX: ID MATCH MSG: 0x%x NO DATA", message.identifier);
     } else {
       WebSerial.printf("RX: NO MATCH MSG: 0x%x NO DATA", message.identifier);
     }
-  }
+  } */
   
+
   uint8_t rxSwitchID = message.data[4]; // get switch ID
   switch (message.identifier) {
     case SET_DISPLAY_OFF:          // set display off
@@ -476,10 +488,6 @@ static void handle_rx_message(twai_message_t &message) {
       break;      
     case DATA_OUTPUT_SWITCH_MOM_PUSH: // we received a momentary switch message, send a switch off message
       txSwitchState((uint8_t *)rxNodeID, rxSwitchID, 0);
-      // FLAG_BEGIN_NORMAL_OPER = false; // clear flag to halt normal operation
-      // vTaskDelay(10);
-      // txSendHalt((uint8_t *)rxNodeID); // send halt message to other node
-      // introMsgPtr = introMsgPtr + 1;
       break;
     case REQ_INTERFACES: // request for interface introduction     
       WebSerial.printf("RX: IFACE intro req, responding to %02x:%02x:%02x:%02x\n", message.data[0], message.data[1], message.data[2], message.data[3]);
@@ -512,7 +520,7 @@ static void handle_rx_message(twai_message_t &message) {
             }
           } else {
             // WebSerial.println("RX: BOX ALREADY IN LIST");
-            nodeList[nodePtr].lastSeen  = getEpoch(); // update last seen time
+            // nodeList[nodePtr].lastSeen  = getEpoch(); // update last seen time
           }
           txIntroack(ACK_SWITCHBOX, rxNodeID); // ack introduction message
         }
@@ -524,7 +532,6 @@ static void handle_rx_message(twai_message_t &message) {
           if (nodePtr == NODE_NOT_FOUND) { // node not found in list
             // WebSerial.println("RX: OUTP PARENT NODE NOT FOUND");
           } else {
-            nodeList[nodePtr].lastSeen  = getEpoch(); // update last seen time
             if (nodeList[nodePtr].moduleCnt < modListMax) { // check if we have space in the list
               int modSearchPtr = modSearch(rxNodeID, message.identifier); // check if the sub module is already in the list
               // WebSerial.printf("RX: MOD FOUND AT PTR %i ON NODE %i\n", modSearchPtr, nodePtr);
@@ -673,8 +680,8 @@ void TaskTWAI(void *pvParameters) {
       // }
       nodeCheckStatus();
       // printEpoch();
-      WebSerial.printf(".");
-      Serial.printf(".");
+      WebSerial.printf(".\n");
+      // Serial.printf(".");
     }
     vTaskDelay(10);
 
@@ -772,6 +779,7 @@ void setup() {
   ArduinoOTA
   .onStart([]() {
     String type;
+    vTaskSuspend(canbus_task_handle); // suspend canbus task
     if (ArduinoOTA.getCommand() == U_FLASH) {
       type = "sketch";
     } else {  // U_SPIFFS
