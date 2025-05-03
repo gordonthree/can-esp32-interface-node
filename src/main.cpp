@@ -237,12 +237,19 @@ static void dumpNodeList() {
   }
   for (uint8_t i = 0; i < nodeListMax; i++) {
     if (nodeList[i].nodeID[0] != 0) { // check if node ID is not empty
-      WebSerial.printf("Node %d: %02x:%02x:%02x:%02x\n", i, nodeList[i].nodeID[0], nodeList[i].nodeID[1], nodeList[i].nodeID[2], nodeList[i].nodeID[3]);
+      WebSerial.printf("Node %d: %02x:%02x:%02x:%02x\n", 
+                      i, nodeList[i].nodeID[0], nodeList[i].nodeID[1],
+                      nodeList[i].nodeID[2], nodeList[i].nodeID[3]);
+      
       WebSerial.printf("Type: %03x\n", nodeList[i].nodeType);
       WebSerial.printf("Feature Mask: %02x %02x\n", nodeList[i].featureMask[0], nodeList[i].featureMask[1]);
-      WebSerial.printf("Sub Modules: %03x %03x %03x %03x\n", nodeList[i].subModules[0], nodeList[i].subModules[1], nodeList[i].subModules[2], nodeList[i].subModules[3]);
-      WebSerial.printf("Sub Module Count: %d %d %d %d\n", nodeList[i].subModCnt[0], nodeList[i].subModCnt[1], nodeList[i].subModCnt[2], nodeList[i].subModCnt[3]);
-      WebSerial.printf("Module Count: %d\n", nodeList[i].moduleCnt);
+      WebSerial.printf("Sub Modules: %03x %03x %03x %03x\n", 
+        nodeList[i].subModules[0], nodeList[i].subModules[1], nodeList[i].subModules[2], nodeList[i].subModules[3]);
+      
+        WebSerial.printf("Sub Module Count: %d %d %d %d\n", 
+        nodeList[i].subModCnt[0], nodeList[i].subModCnt[1], nodeList[i].subModCnt[2], nodeList[i].subModCnt[3]);
+      
+        WebSerial.printf("Module Count: %d\n", nodeList[i].moduleCnt);
       WebSerial.printf("First Seen: %lu\n", nodeList[i].firstSeen);
       WebSerial.printf("Last Seen: %lu\n", nodeList[i].lastSeen);
     }
