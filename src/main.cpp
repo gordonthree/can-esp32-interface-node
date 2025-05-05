@@ -32,6 +32,7 @@ static AsyncWebServer server(80);
 // esp32 native TWAI / CAN library
 #include "driver/twai.h"
 TaskHandle_t canbus_task_handle = NULL; // task handle for canbus task
+// TaskHandle_t 
 
 // my canbus stuff
 #include "canbus_msg.h"
@@ -41,16 +42,26 @@ TaskHandle_t canbus_task_handle = NULL; // task handle for canbus task
 
 // Interval:
 #define TRANSMIT_RATE_MS 1000
-#define POLLING_RATE_MS 1000
+#define POLLING_RATE_MS  100
 
 // time stuff
 #define NTP_SERVER     "us.pool.ntp.org"
 #define UTC_OFFSET     0
 #define UTC_OFFSET_DST 0
 
-struct remoteIface {
-
+struct imuDataType {
+  float xaccel = 0.0;    
+  float yaccel = 0.0;
+  float zaccel = 0.0;
+  float xgyro  = 0.0;
+  float ygyro  = 0.0;
+  float zgyro  = 0.0;
+  float temperature = 0.0;
+  uint32_t timestamp = 0;
 };
+
+volatile struct imuDataType IMUdata;
+volatile bool imuDumpFlag = false;
 
 // organize nodes 
 struct remoteNode {
@@ -70,7 +81,7 @@ struct remoteNode {
   uint32_t  lastSeen       = 0;
   // first time message received from node 
   uint32_t  firstSeen       = 0;
-}; 
+} ; 
 
 struct remoteNode nodeList[8]; // list of remote nodes
 volatile uint8_t  nodeListPtr     =     0; // node list pointer
@@ -133,6 +144,12 @@ static volatile uint8_t myNodeID[] = {0, 0, 0, 0}; // node ID
  */
 
 
+// convert byte array into 32-bit integer
+static uint32_t unchunk32(const uint8_t* dataBytes){
+  static uint32_t result = ((dataBytes[0]<<24) || (dataBytes[1]<<16) || (dataBytes[2]<<8) || (dataBytes[3]));
+
+  return result;
+}
 
 
 // Function that gets current epoch time
@@ -272,6 +289,19 @@ static int updateNodeList(const uint8_t* rxNodeID, const uint16_t rxNodeType,
   return NODE_ALREADY_EXISTS; // node on the list but not adding a submodule
 }  // end of updateNodeList
 
+// dump IMU data to WebSerial
+static void dumpIMU() {
+  if (!imuDumpFlag) {
+    return; // bail out of the flag is not set
+  }
+
+  WebSerial.printf("IMU: Time stamp: %u Accel: x %.3f y %.3f z %.3f Gyro: x %.3f y %.3f z %.3f Temp: %.2f\n",
+                    IMUdata.timestamp, IMUdata.xaccel, IMUdata.yaccel, IMUdata.zaccel,
+                    IMUdata.xgyro, IMUdata.ygyro, IMUdata.zgyro, IMUdata.temperature);
+
+  imuDumpFlag = false;
+}
+
 // dump node list to WebSerial
 static void dumpNodeList() {
   WebSerial.println(" ");
@@ -359,10 +389,6 @@ static void send_message(const uint16_t msgID, const uint8_t *msgData, const uin
     return;
   }
 
-
-  leds[0] = CRGB::Blue;
-  FastLED.show();
-
   // Format message
   message.identifier = msgID;       // set message ID
   message.extd = 0;                 // 0 = standard frame, 1 = extended frame
@@ -377,14 +403,12 @@ static void send_message(const uint16_t msgID, const uint8_t *msgData, const uin
     // ESP_LOGI(TAG, "Message queued for transmission\n");
     // printf("Message queued for transmission\n");
     // WebSerial.printf("TX: MSG: %03x WITH %u DATA", msgID, dlc);
-    // WebSerial.printf("TX: MSG: %03x Data: ", msgID);
+    // WebSerial.printf("TX: QUEUED MSG: %03x DATA: ", msgID);
     // for (int i = 0; i < dlc; i++) {
     //   WebSerial.printf("%02x ", message.data[i]);
     // }
     // WebSerial.printf("\n");
   } else {
-    leds[0] = CRGB::Red;
-    FastLED.show();
     // ESP_LOGE(TAG, "Failed to queue message for transmission, initiating recovery");
     WebSerial.printf("ERR: Failed to queue message for transmission, resetting controller\n");
     twai_initiate_recovery();
@@ -396,11 +420,8 @@ static void send_message(const uint16_t msgID, const uint8_t *msgData, const uin
     // ESP_LOGI(TAG, "twai restarted\n");
     // wifiOnConnect();
     vTaskDelay(500);
-    leds[0] = CRGB::Black;
-    FastLED.show();
+
   }
-  leds[0] = CRGB::Black;
-  FastLED.show();
   // vTaskDelay(100);
 }
 
@@ -433,7 +454,7 @@ static void txSwitchState(const uint8_t *nodeID, const uint8_t switchID, const u
   const uint8_t txDLC = 5;
   const uint8_t dataBytes[] = {nodeID[0], nodeID[1], nodeID[2], nodeID[3], switchID}; // set node id and switch ID
   
-  WebSerial.printf("TX: %02x:%02x:%02x:%02x Switch %d State %d\n", nodeID[0],nodeID[1],nodeID[2],nodeID[3], switchID, swState);
+  // WebSerial.printf("TX: %02x:%02x:%02x:%02x Switch %d State %d\n", nodeID[0],nodeID[1],nodeID[2],nodeID[3], switchID, swState);
 
   switch (swState) {
     case 0: // switch off
@@ -455,7 +476,7 @@ static void txSwitchState(const uint8_t *nodeID, const uint8_t switchID, const u
 static void txSwitchMode(const uint8_t *data, const uint8_t switchID, const uint8_t switchMode) {
   const uint8_t txDLC = 6;
   const uint8_t dataBytes[] = {data[0], data[1], data[2], data[3], switchID, switchMode}; // set node id switch ID
-  WebSerial.printf("TX: %02x:%02x:%02x:%02x Switch %d Mode %d\n",data[0], data[1], data[2], data[3], switchID, switchMode);
+  // WebSerial.printf("TX: %02x:%02x:%02x:%02x Switch %d Mode %d\n",data[0], data[1], data[2], data[3], switchID, switchMode);
   send_message(SW_SET_MODE, dataBytes, sizeof(dataBytes)); // send message to set switch mode
 }
 
@@ -499,15 +520,17 @@ static uint8_t* getEpochStr() {
   return (uint8_t*)epochStr; // return pointer to epoch string
 }
 
+volatile ulong lastMillis;
 // eventually check on connected nodes here
 static void nodeCheckStatus() {
-  static ulong lastMillis;
   unsigned long currentMillis = millis();
 
-  if (currentMillis - previousMillis >= 30000) { // run every 30 seconds
-    send_message(DATA_EPOCH, getEpochStr(), 4);  // send four bytes of the epoch time string
-  }
-  
+  // if (currentMillis - previousMillis >= 30000) { // run every 30 seconds
+  //   WebSerial.printf(".\n");
+
+  //   send_message(DATA_EPOCH, getEpochStr(), 4);  // send four bytes of the epoch time string
+  //   lastMillis = currentMillis; // update last millis timestamp
+  // }
 }
 
 // handle incoming can messages
@@ -515,8 +538,10 @@ static void handle_rx_message(twai_message_t &message) {
   bool msgFlag = false;
   bool haveRXID = false; 
   int msgIDComp;
+  uint8_t dlc = message.data_length_code;
   uint16_t msgID = message.identifier; // store message ID
-  uint8_t rxNodeID[4] = {0, 0, 0, 0}; // node ID
+  uint8_t rxNodeID[NODE_ID_SIZE] = {0, 0, 0, 0}; // node ID
+  uint8_t imuDataBytes[CAN_MAX_DLC] = {0,0,0,0,0,0,0,0}; // storage for data string from IMU
 
   leds[0] = CRGB::Orange;
   FastLED.show();
@@ -535,25 +560,54 @@ static void handle_rx_message(twai_message_t &message) {
 
   if (message.data_length_code > 0) { // message contains data, check if it is for us
     if (msgFlag) {
-      WebSerial.printf("RX: ID MATCH MSG: 0x%x WITH Data ", message.identifier);
+      WebSerial.printf("RX: ID MATCH MSG: %x WITH Data\n", message.identifier);
     } else {
-      WebSerial.printf("RX: NO MATCH MSG: 0x%x WITH DATA ", message.identifier);
+      // WebSerial.printf("RX: NO MATCH MSG: 0x%x WITH DATA ", message.identifier);
     }
-    for (int i = 0; i < message.data_length_code; i++) {
-      WebSerial.printf("%d = %02x ", i, message.data[i]);
-    }
-    WebSerial.println(""); 
+    // for (int i = 0; i < message.data_length_code; i++) {
+    //   WebSerial.printf("%d = %02x ", i, message.data[i]);
+    // }
+    // WebSerial.println(""); 
   } else {
     if (msgFlag) {
-      WebSerial.printf("RX: ID MATCH MSG: 0x%x NO DATA", message.identifier);
+      WebSerial.printf("RX: ID MATCH MSG: %x NO DATA\n", message.identifier);
     } else {
-      WebSerial.printf("RX: NO MATCH MSG: 0x%x NO DATA", message.identifier);
+      // WebSerial.printf("RX: NO MATCH MSG: 0x%x NO DATA", message.identifier);
     }
+  }
+  
+  // handle IMU messages
+  if ((msgID >= DATA_IMU_X_AXIS) && (msgID <= DATA_IMU_TEMPERATURE)) {
+    for (uint8_t i=0; i<CAN_MAX_DLC; i++) imuDataBytes[i] = message.data[i]; // copy the imu data from the message string
+       
+    IMUdata.timestamp = getEpoch(); // update imu data timestamp
   }
   
 
   uint8_t rxSwitchID = message.data[4]; // get switch ID
   switch (msgID) {
+    case DATA_IMU_X_AXIS:
+      IMUdata.xaccel = atof((char*)imuDataBytes);
+      break;
+    case DATA_IMU_Y_AXIS:
+      IMUdata.yaccel = atof((char*)imuDataBytes);
+      break;
+    case DATA_IMU_Z_AXIS:
+      IMUdata.zaccel = atof((char*)imuDataBytes);
+      break;
+    case DATA_IMU_X_GYRO:
+      IMUdata.xgyro = atof((char*)imuDataBytes);
+      break;
+    case DATA_IMU_Y_GYRO:
+      IMUdata.ygyro = atof((char*)imuDataBytes);
+      break;
+    case DATA_IMU_Z_GYRO:
+      IMUdata.zgyro = atof((char*)imuDataBytes);
+      break;
+    case DATA_IMU_TEMPERATURE:
+      IMUdata.temperature = atof((char*)imuDataBytes);
+      break;
+
     case SET_DISPLAY_OFF:          // set display off
       rxDisplayMode(message.data, 0); 
       break;
@@ -600,6 +654,7 @@ static void handle_rx_message(twai_message_t &message) {
     */      
 
     default:
+ 
       // add main node to list here
       if ((msgID & NODE_MOD_MASK) >= ADDR_FIRST_NODE) { // node introduction messages
         uint8_t rxFeatureMask[FEATURE_MASK_SIZE] = {0, 0}; // feature mask storage
@@ -607,12 +662,12 @@ static void handle_rx_message(twai_message_t &message) {
         int updateResult = updateNodeList(rxNodeID, msgID, rxFeatureMask); // update node list with new node
         if (updateResult == true) { // node added to list
           WebSerial.printf("RX: ADDED %03x NODE: %02x:%02x:%02x:%02x\n", msgID, rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
-        } else if (updateResult == NODE_LIST_FULL) { // node list full
-          WebSerial.println("RX: NODE LIST FULL");
-        } else if (updateResult == NODE_ALREADY_EXISTS) { // node already exists in the list
-          WebSerial.println("RX: NODE ALREADY ON LIST");
-        } else if (updateResult == NODE_NOT_FOUND) { // rxnodeid was blank
-          WebSerial.println("RX: INVALID NODE ID");
+        // } else if (updateResult == NODE_LIST_FULL) { // node list full
+        //   WebSerial.println("RX: NODE LIST FULL");
+        // } else if (updateResult == NODE_ALREADY_EXISTS) { // node already exists in the list
+        //   WebSerial.println("RX: NODE ALREADY ON LIST");
+        // } else if (updateResult == NODE_NOT_FOUND) { // rxnodeid was blank
+        //   WebSerial.println("RX: INVALID NODE ID");
         } else {
           WebSerial.println("RX: UNKNOWN ERROR");
         }
@@ -625,14 +680,14 @@ static void handle_rx_message(twai_message_t &message) {
         int updateResult = updateNodeList(rxNodeID, msgID, NULL, subModuleCnt, true ); // add sub module to node list
         if (updateResult == true) { // sub mod added to list
           WebSerial.printf("RX: ADDED SUB MODULE %03x TO NODE %02x:%02x:%02x:%02x\n", msgID, rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
-        } else if (updateResult == NODE_NOT_FOUND) { // parent node not on the list
-          WebSerial.println("RX: NODE NOT FOUND");
-        } else if (updateResult == MODULE_ALREADY_EXISTS) { // this module is already listed
-          WebSerial.println("RX: NODE ALREADY ON LIST");
-        } else if (updateResult == MODULE_LIST_FULL) { // sub module list is full for this node
-          WebSerial.println("RX: NODE SUB MOD LIST FULL");
-        } else if (updateResult == NODE_NOT_FOUND) { // rxnodeid was blank
-          WebSerial.println("RX: INVALID NODE ID");
+        // } else if (updateResult == NODE_NOT_FOUND) { // parent node not on the list
+        //   WebSerial.println("RX: NODE NOT FOUND");
+        // } else if (updateResult == MODULE_ALREADY_EXISTS) { // this module is already listed
+        //   WebSerial.println("RX: NODE ALREADY ON LIST");
+        // } else if (updateResult == MODULE_LIST_FULL) { // sub module list is full for this node
+        //   WebSerial.println("RX: NODE SUB MOD LIST FULL");
+        // } else if (updateResult == NODE_NOT_FOUND) { // rxnodeid was blank
+        //   WebSerial.println("RX: INVALID NODE ID");
         } else {
           WebSerial.println("RX: UNKNOWN ERROR");
         }
@@ -751,8 +806,8 @@ void TaskTWAI(void *pvParameters) {
     unsigned long currentMillis = millis();
     if (currentMillis - previousMillis >= TRANSMIT_RATE_MS) { // run this code every 1000 ms
       previousMillis = currentMillis;
-      leds[0] = CRGB::DarkBlue;
-      FastLED.show();
+      // leds[0] = CRGB::DarkBlue;
+      // FastLED.show();
       // if (introMsgPtr < introMsgCnt) {
       //   WebSerial.printf("TX: Intro message ptr %d\n", introMsgPtr);
       //   if (introMsg[introMsgPtr] > 0) {
@@ -765,10 +820,11 @@ void TaskTWAI(void *pvParameters) {
       //     introMsgPtr = introMsgPtr + 1; // increment intro message pointer 1st step
       //   }
       // }
-      nodeCheckStatus();
-      // printEpoch();
-      WebSerial.printf(".\n");
-      // Serial.printf(".");
+      // nodeCheckStatus();
+      WebSerial.printf(".");
+      dumpIMU();
+
+      // send_message(DATA_EPOCH, getEpochStr(), 4);  // send four bytes of the epoch time string
     }
     vTaskDelay(10);
 
@@ -827,6 +883,11 @@ void recvMsg(uint8_t *data, size_t len){
   if (d == "TIME"){
     printEpoch();
     // digitalWrite(LED, HIGH);
+  }
+
+  if (d == "IMU"){
+    imuDumpFlag = !imuDumpFlag;
+    WebSerial.printf("IMU dump flag %d", imuDumpFlag);
   }
 }
 
