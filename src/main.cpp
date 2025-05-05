@@ -66,21 +66,21 @@ volatile bool imuDumpFlag = false;
 // organize nodes 
 struct remoteNode {
   // 32-bit node id number
-  uint8_t   nodeID[4]      = {0,0,0,0}; 
+  uint8_t   nodeID[NODE_ID_SIZE] = {0,0,0,0}; 
   // 11-bit can bus message id and node type
-  uint16_t  nodeType       = 0;
+  uint16_t  nodeType             = 0;
   // node feature mask storaege (optional)
-  uint8_t   featureMask[2] = {0,0};
+  uint8_t   featureMask[2]       = {0,0};
   // storage for any sub modules
-  uint16_t  subModuleList[8]  = {0,0,0,0}; 
+  uint16_t  subModuleList[8]     = {0}; 
   // sub module count for each sub module
-  uint8_t   subModCntList[8]   = {0,0,0,0};
+  uint8_t   subModCntList[8]     = {0};
   // total sub module count
-  uint8_t   moduleCnt      = 0; 
+  uint8_t   moduleCnt            = 0; 
   // last time message received from node 
-  uint32_t  lastSeen       = 0;
+  uint32_t  lastSeen             = 0;
   // first time message received from node 
-  uint32_t  firstSeen       = 0;
+  uint32_t  firstSeen            = 0;
 } ; 
 
 struct remoteNode nodeList[8]; // list of remote nodes
@@ -183,7 +183,7 @@ static void printEpoch() {
  * @return The index of the found node in nodeList if successful,
  *         NODE_NOT_FOUND (-1) if the node ID is not found or NODE_ID_INVALID if rxNodeID is NULL.
  */
-int nodeSearch(const uint8_t rxNodeID[4]) {
+int nodeSearch(const uint8_t rxNodeID[NODE_ID_SIZE]) {
   // Basic input validation
   if (rxNodeID == NULL) {
       return NODE_ID_INVALID; // Cannot search for a NULL ID
@@ -206,7 +206,7 @@ int nodeSearch(const uint8_t rxNodeID[4]) {
  * @return The index of the found node in nodeList if successful,
  *         NODE_NOT_FOUND (-1) if the node ID is not found or rxNodeID is NULL.
  */
-int modSearch(const uint8_t rxNodeID[4], const uint16_t modID) {
+int modSearch(const uint8_t rxNodeID[NODE_ID_SIZE], const uint16_t modID) {
   // Basic input validation
   if (rxNodeID == NULL) {
       return NODE_NOT_FOUND; // Cannot search for a NULL ID
@@ -547,7 +547,7 @@ static void handle_rx_message(twai_message_t &message) {
   FastLED.show();
 
   // check if message contains enough data to have node id
-  if (message.data_length_code > 3) { 
+  if (message.data_length_code >= NODE_ID_SIZE) { 
     memcpy((void *)rxNodeID, (const void *)message.data, NODE_ID_SIZE); // copy node id from message
     msgIDComp = memcmp((const void *)rxNodeID, (const void *)myNodeID, NODE_ID_SIZE);
     haveRXID = true; // set flag to true if message contains node id
@@ -558,23 +558,7 @@ static void handle_rx_message(twai_message_t &message) {
     }
   }
 
-  if (message.data_length_code > 0) { // message contains data, check if it is for us
-    if (msgFlag) {
-      WebSerial.printf("RX: ID MATCH MSG: %x WITH Data\n", message.identifier);
-    } else {
-      // WebSerial.printf("RX: NO MATCH MSG: 0x%x WITH DATA ", message.identifier);
-    }
-    // for (int i = 0; i < message.data_length_code; i++) {
-    //   WebSerial.printf("%d = %02x ", i, message.data[i]);
-    // }
-    // WebSerial.println(""); 
-  } else {
-    if (msgFlag) {
-      WebSerial.printf("RX: ID MATCH MSG: %x NO DATA\n", message.identifier);
-    } else {
-      // WebSerial.printf("RX: NO MATCH MSG: 0x%x NO DATA", message.identifier);
-    }
-  }
+
   
   // handle IMU messages
   if ((msgID >= DATA_IMU_X_AXIS) && (msgID <= DATA_IMU_TEMPERATURE)) {
@@ -629,29 +613,7 @@ static void handle_rx_message(twai_message_t &message) {
     case DATA_OUTPUT_SWITCH_MOM_PUSH: // we received a momentary switch message, send a switch off message
       txSwitchState((uint8_t *)rxNodeID, rxSwitchID, 0);
       break;
-    // case REQ_IFACE: // request for interface introduction     
-    //   WebSerial.printf("RX: IFACE intro req, responding to %02x:%02x:%02x:%02x\n", message.data[0], message.data[1], message.data[2], message.data[3]);
-    //   // FLAG_SEND_INTRODUCTION = true; // set flag to send introduction message
-    //   break;
-    
-    /* this codeblock lives in the updateNodeList function now, saving it for reference
-            if (haveRXID) { // check if the message arrived with a node id
-          int nodePtr = nodeSearch(rxNodeID); // check if this node is already in the list
-          WebSerial.printf("RX: IFACE intro %02x:%02x:%02x:%02x PTR:%i\n", rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3], nodePtr);
-          if (nodePtr == NODE_NOT_FOUND) { // node not found in list
-            if (nodeListPtr < NODE_LIST_MAX) { // check if we have space in the list
-              nodeList[nodeListPtr].nodeID[0] = rxNodeID[0]; // node id
-              nodeList[nodeListPtr].nodeID[1] = rxNodeID[1];
-              nodeList[nodeListPtr].nodeID[2] = rxNodeID[2];
-              nodeList[nodeListPtr].nodeID[3] = rxNodeID[3];
-              nodeList[nodeListPtr].nodeType  = msgID; // node type
-              nodeList[nodeListPtr].featureMask[0] = message.data[4]; // feature mask
-              nodeList[nodeListPtr].featureMask[1] = message.data[5]; // feature mask
-              nodeList[nodeListPtr].firstSeen  = getEpoch(); // set first seen time
-              nodeListPtr = nodeListPtr + 1; // increment node list pointer
-              WebSerial.printf("RX: ADDED IFACE #%d: %02x:%02x:%02x:%02x\n", nodeListPtr, rxNodeID[0], rxNodeID[1], rxNodeID[2], rxNodeID[3]);
 
-    */      
 
     default:
  
@@ -694,6 +656,23 @@ static void handle_rx_message(twai_message_t &message) {
         txIntroack(ACK_INTRO, rxNodeID); // ack introduction message
       }
       
+      if (dlc > 0) { // message contains data, check if it is for us
+        if (msgFlag) {
+          WebSerial.printf("RX: ID MATCH MSG: %x WITH Data\n", message.identifier);
+        } else {
+          // WebSerial.printf("RX: NO MATCH MSG: 0x%x WITH DATA ", message.identifier);
+        }
+        // for (int i = 0; i < message.data_length_code; i++) {
+        //   WebSerial.printf("%d = %02x ", i, message.data[i]);
+        // }
+        // WebSerial.println(""); 
+      } else {
+        if (msgFlag) {
+          WebSerial.printf("RX: ID MATCH MSG: %x NO DATA\n", message.identifier);
+        } else {
+          // WebSerial.printf("RX: NO MATCH MSG: 0x%x NO DATA", message.identifier);
+        }
+      }      
       break;
   }
 
@@ -894,7 +873,7 @@ void recvMsg(uint8_t *data, size_t len){
 
 void setup() {
 
-  introMsgCnt = 5; // number of intro messages
+  introMsgCnt = 4; // number of intro messages
   introMsgPtr = 0; // start at zero
   introMsg[1] = (uint16_t) REQ_NODE_INTRO; // ask for remote nodes
   introMsg[2] = 0; // first ack introduction
