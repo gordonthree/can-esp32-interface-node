@@ -20,6 +20,9 @@ static AsyncWebServer server(80);
 // Load FastLED
 #include <FastLED.h>
 
+// display
+#include <SerLCD.h>
+
 // Webserver and file system
 #define SPIFFS LittleFS
 #include <LittleFS.h>
@@ -35,8 +38,7 @@ TaskHandle_t canbus_task_handle = NULL; // task handle for canbus task
 // TaskHandle_t 
 
 // my canbus stuff
-#include "canbus_msg.h"
-#include "canbus_flags.h"
+#include <canbus_project.h>
 
 #define CAN_SELF_MSG 0
 
@@ -44,44 +46,15 @@ TaskHandle_t canbus_task_handle = NULL; // task handle for canbus task
 #define TRANSMIT_RATE_MS 1000
 #define POLLING_RATE_MS  100
 
-// time stuff
-#define NTP_SERVER     "us.pool.ntp.org"
-#define UTC_OFFSET     0
-#define UTC_OFFSET_DST 0
+SerLCD lcd;
 
-struct imuDataType {
-  float xaccel = 0.0;    
-  float yaccel = 0.0;
-  float zaccel = 0.0;
-  float xgyro  = 0.0;
-  float ygyro  = 0.0;
-  float zgyro  = 0.0;
-  float temperature = 0.0;
-  uint32_t timestamp = 0;
-};
+
 
 volatile struct imuDataType IMUdata;
-volatile bool imuDumpFlag = false;
+volatile bool   imuDumpFlag = false;
 
 // organize nodes 
-struct remoteNode {
-  // 32-bit node id number
-  uint8_t   nodeID[NODE_ID_SIZE] = {0,0,0,0}; 
-  // 11-bit can bus message id and node type
-  uint16_t  nodeType             = 0;
-  // node feature mask storaege (optional)
-  uint8_t   featureMask[2]       = {0,0};
-  // storage for any sub modules
-  uint16_t  subModuleList[8]     = {0}; 
-  // sub module count for each sub module
-  uint8_t   subModCntList[8]     = {0};
-  // total sub module count
-  uint8_t   moduleCnt            = 0; 
-  // last time message received from node 
-  uint32_t  lastSeen             = 0;
-  // first time message received from node 
-  uint32_t  firstSeen            = 0;
-} ; 
+
 
 struct remoteNode nodeList[8]; // list of remote nodes
 volatile uint8_t  nodeListPtr     =     0; // node list pointer
@@ -149,6 +122,11 @@ static uint32_t unchunk32(const uint8_t* dataBytes){
   static uint32_t result = ((dataBytes[0]<<24) || (dataBytes[1]<<16) || (dataBytes[2]<<8) || (dataBytes[3]));
 
   return result;
+}
+// convert a 32-bit number into a 4 byte array
+char* chunk32(const uint32_t inVal = 0) {
+  static char tempStr[4] = {(inVal >> 24) && 0xFF, (inVal >> 16) && 0xFF, (inVal >>  8) && 0xFF, inVal && 0xFF};
+  return tempStr;
 }
 
 
@@ -912,7 +890,15 @@ void setup() {
   FastLED.show();
 
   Serial.begin(9600, SERIAL_8N1, 19, 18); // alternate serial port
-  Serial.println("Hello, world!");
+
+  lcd.begin(Serial);
+
+  lcd.clear();
+  
+  lcd.cursor();
+
+  lcd.println("Hello, world.");
+
   
   WiFi.onEvent(WiFiEvent);
   WiFi.mode(WIFI_MODE_APSTA);
